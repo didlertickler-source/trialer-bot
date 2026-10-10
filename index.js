@@ -14,7 +14,7 @@ const {
   Events
 } = require("discord.js");
 
-const env = [
+const required = [
   "DISCORD_TOKEN",
   "CLIENT_ID",
   "SOURCE_GUILD_ID",
@@ -23,10 +23,8 @@ const env = [
   "TARGET_INVITE_URL"
 ];
 
-for (const key of env) {
-  if (!process.env[key]) {
-    throw new Error(`Missing environment variable: ${key}`);
-  }
+for (const key of required) {
+  if (!process.env[key]) throw new Error(`Missing environment variable: ${key}`);
 }
 
 const ranks = [
@@ -63,8 +61,8 @@ function savePending() {
   fs.renameSync(temp, dataFile);
 }
 
-function normalize(s) {
-  return s.toLowerCase()
+function normalize(value) {
+  return value.toLowerCase()
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9]/g, "");
@@ -83,17 +81,21 @@ function findRank(input) {
 
   if (matches.length > 1) {
     return {
-      error: `That name matches multiple ranks. Be more specific: ${matches.join(", ")}`
+      error: `Multiple ranks match. Be more specific:\n${matches.join("\n")}`
     };
   }
 
-  return { error: `Rank not found. Available ranks: ${ranks.join(", ")}` };
+  return { error: `Rank not found:\n${ranks.join("\n")}` };
 }
 
-const command = new SlashCommandBuilder()
+function isAdmin(member) {
+  return member?.permissions?.has(PermissionFlagsBits.Administrator) ?? false;
+}
+
+const rankCommand = new SlashCommandBuilder()
   .setName("rank")
-  .setDescription("Publish a trial result and assign a rank.")
-  .setDefaultMemberPermissions(PermissionFlagsBits.KickMembers)
+  .setDescription("Publish a trial result and rank a player.")
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
   .addUserOption(o =>
     o.setName("user")
       .setDescription("Player being ranked")
@@ -104,10 +106,35 @@ const command = new SlashCommandBuilder()
       .setRequired(true)
       .setMaxLength(80));
 
+const checkCommand = new SlashCommandBuilder()
+  .setName("check")
+  .setDescription("Check a player's rank in the destination server.")
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+  .addUserOption(o =>
+    o.setName("user")
+      .setDescription("Player to check")
+      .setRequired(true));
+
+const promoteCommand = new SlashCommandBuilder()
+  .setName("promote")
+  .setDescription("Promote a member in the destination server.")
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+  .addUserOption(o =>
+    o.setName("user")
+      .setDescription("Member to promote")
+      .setRequired(true))
+  .addStringOption(o =>
+    o.setName("rank")
+      .setDescription("New rank; decorative symbols are optional")
+      .setRequired(true)
+      .setMaxLength(80));
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent
   ]
 });
 
@@ -118,155 +145,330 @@ client.once(Events.ClientReady, c => {
   console.log(`Logged in as ${c.user.tag}`);
 });
 
-client.on(Events.InteractionCreate, async i => {
-  if (!i.isChatInputCommand() || i.commandName !== "rank") return;
+// PREFIX COMMANDS
+client.on(Events.MessageCreate, async message => {
+  if (message.author.bot || !message.guild) return;
 
-  if (i.guildId !== process.env.SOURCE_GUILD_ID) {
-    return i.reply({
-      content: "This command is only available in the configured source server.",
-      ephemeral: true
-    });
+  const content = message.content.trim().toLowerCase();
+
+  if (!["?membercount", "?whosflorian"].includes(content)) return;
+
+  if (!isAdmin(message.member)) {
+    return message.reply("You need Administrator permission to use this command.");
   }
 
-  if (!i.memberPermissions?.has(PermissionFlagsBits.KickMembers)) {
+  if (content === "?whosflorian") {
+    return message.reply("de goat");
+  }
+
+  if (content === "?membercount") {
+    const guild = await client.guilds
+      .fetch(process.env.TARGET_GUILD_ID)
+      .catch(() => null);
+
+    if (!guild) {
+      return message.reply("I can't access the destination server.");
+    }
+
+    try {
+      const fullGuild = await guild.fetch();
+
+      const embed = new EmbedBuilder()
+        .setColor(0x202225)
+        .setTitle("Server Member Count")
+        .setDescription(
+          `**Server:** ${fullGuild.name}\n` +
+          `**Total Members:** ${fullGuild.memberCount.toLocaleString()}`
+        )
+        .setTimestamp();
+
+      return message.reply({ embeds: [embed] });
+    } catch {
+      return message.reply("Couldn't retrieve the member count.");
+    }
+  }
+});
+
+// SLASH COMMANDS
+client.on(Events.InteractionCreate, async i => {
+  if (!i.isChatInputCommand()) return;
+
+  if (!["rank", "check", "promote"].includes(i.commandName)) return;
+
+  if (!i.inGuild() || !isAdmin(i.member)) {
     return i.reply({
-      content: "You need the **Kick Members** permission.",
+      content: "Administrator permission is required to use this command.",
       ephemeral: true
     });
   }
 
   const user = i.options.getUser("user", true);
-  const input = i.options.getString("role", true);
-  const found = findRank(input);
 
-  if (found.error) {
-    return i.reply({ content: found.error, ephemeral: true });
+  // CHECK RANK
+  if (i.commandName === "check") {
+    await i.deferReply({ ephemeral: true });
+
+    const guild = await client.guilds
+      .fetch(process.env.TARGET_GUILD_ID)
+      .catch(() => null);
+
+    if (!guild) return i.editReply("I can't access the destination server.");
+
+    const member = await guild.members.fetch(user.id).catch(() => null);
+
+    if (!member) {
+      return i.editReply("That player isn't in the destination server.");
+    }
+
+    const found = member.roles.cache
+      .filter(role => ranks.some(r => normalize(r) === normalize(role.name)))
+      .map(role => role.name);
+
+    const embed = new EmbedBuilder()
+      .setColor(0x202225)
+      .setTitle("Rank Check")
+      .setThumbnail(user.displayAvatarURL())
+      .setDescription(
+        `**Player:** ${user}\n` +
+        `**Server:** ${guild.name}\n` +
+        `**Rank:** ${found.length ? found.join(", ") : "Unranked"}`
+      )
+      .setTimestamp();
+
+    return i.editReply({ embeds: [embed] });
   }
 
-  await i.deferReply({ ephemeral: true });
+  // PROMOTE MEMBER IN DESTINATION SERVER
+  if (i.commandName === "promote") {
+    await i.deferReply({ ephemeral: true });
 
-  const source = i.guild;
-  const target = await client.guilds
-    .fetch(process.env.TARGET_GUILD_ID)
-    .catch(() => null);
+    const input = i.options.getString("rank", true);
+    const result = findRank(input);
 
-  if (!target) {
-    return i.editReply("I can't access the destination server.");
-  }
+    if (result.error) return i.editReply(result.error);
 
-  if (source.id === target.id) {
-    return i.editReply("The source and destination servers must be different.");
-  }
+    const guild = await client.guilds
+      .fetch(process.env.TARGET_GUILD_ID)
+      .catch(() => null);
 
-  const channel = await source.channels
-    .fetch(process.env.TRIAL_RESULTS_CHANNEL_ID)
-    .catch(() => null);
+    if (!guild) return i.editReply("I can't access the destination server.");
 
-  if (!channel?.isTextBased() || !channel.send) {
-    return i.editReply("I couldn't find the trial-results text channel.");
-  }
+    const member = await guild.members.fetch(user.id).catch(() => null);
 
-  const member = await source.members.fetch(user.id).catch(() => null);
-  if (!member) {
-    return i.editReply("That player isn't in the source server.");
-  }
+    if (!member) {
+      return i.editReply("That player isn't in the destination server.");
+    }
 
-  if (user.id === i.user.id || user.id === source.ownerId) {
-    return i.editReply("You can't use this command to rank-kick yourself or the server owner.");
-  }
-
-  const role = target.roles.cache.find(
-    r => normalize(r.name) === normalize(found.rank)
-  );
-
-  if (!role || role.managed || role.id === target.id) {
-    return i.editReply(`Create the destination role first: ${found.rank}`);
-  }
-
-  const sourceBot = source.members.me;
-  const targetBot = await target.members.fetchMe();
-
-  if (!sourceBot?.permissions.has(PermissionFlagsBits.KickMembers)) {
-    return i.editReply("I need **Kick Members** in the source server.");
-  }
-
-  if (member.roles.highest.comparePositionTo(sourceBot.roles.highest) >= 0) {
-    return i.editReply("Move my highest role above the player in the source server.");
-  }
-
-  if (
-    !targetBot.permissions.has(PermissionFlagsBits.ManageRoles) ||
-    targetBot.roles.highest.comparePositionTo(role) <= 0
-  ) {
-    return i.editReply(
-      "I need **Manage Roles** in the destination server, and my highest role must be above the rank."
+    const role = guild.roles.cache.find(
+      r => normalize(r.name) === normalize(result.rank)
     );
+
+    if (!role || role.managed || role.id === guild.id) {
+      return i.editReply(`Create this rank role first:\n${result.rank}`);
+    }
+
+    const botMember = await guild.members.fetchMe();
+
+    if (
+      !botMember.permissions.has(PermissionFlagsBits.ManageRoles) ||
+      botMember.roles.highest.comparePositionTo(role) <= 0
+    ) {
+      return i.editReply(
+        "I need Manage Roles, and my highest role must be above the requested rank."
+      );
+    }
+
+    if (member.id === guild.ownerId) {
+      return i.editReply("The server owner cannot be promoted using this command.");
+    }
+
+    const previousRanks = member.roles.cache.filter(r =>
+      ranks.some(name => normalize(name) === normalize(r.name))
+    );
+
+    try {
+      // Replace the previous rank roles with the selected rank.
+      await member.roles.remove(
+        previousRanks,
+        `Promoted by ${i.user.tag}`
+      );
+
+      await member.roles.add(role, `Promoted by ${i.user.tag}`);
+    } catch (error) {
+      console.error("Promotion failed:", error);
+      return i.editReply(
+        "Promotion failed. Check my Manage Roles permission and role hierarchy."
+      );
+    }
+
+    const logEmbed = new EmbedBuilder()
+      .setColor(0x202225)
+      .setTitle("Rank Promotion Log")
+      .setDescription(
+        `**Player:** ${user} (\`${user.id}\`)\n` +
+        `**Previous Rank(s):** ${previousRanks.size ? previousRanks.map(r => r.name).join(", ") : "Unranked"}\n` +
+        `**New Rank:** ${role.name}\n` +
+        `**Promoted By:** ${i.user}\n` +
+        `**Server:** ${guild.name}`
+      )
+      .setTimestamp();
+
+    // Optional: set RANK_LOG_CHANNEL_ID to a text channel ID in the destination server.
+    if (process.env.RANK_LOG_CHANNEL_ID) {
+      const logChannel = await guild.channels
+        .fetch(process.env.RANK_LOG_CHANNEL_ID)
+        .catch(() => null);
+
+      if (logChannel?.isTextBased() && logChannel.send) {
+        await logChannel.send({ embeds: [logEmbed] }).catch(console.error);
+      }
+    }
+
+    await user.send(
+      `You've been promoted to **${role.name}** in **${guild.name}**.`
+    ).catch(() => {});
+
+    return i.editReply(`Successfully promoted ${user} to **${role.name}**.`);
   }
 
-  // Save the pending assignment before kicking the member.
-  pending[user.id] = {
-    rankName: role.name,
-    roleId: role.id,
-    createdAt: Date.now()
-  };
-  savePending();
+  // RANK PLAYER FROM SOURCE SERVER
+  if (i.commandName === "rank") {
+    if (i.guildId !== process.env.SOURCE_GUILD_ID) {
+      return i.reply({
+        content: "Use this command in the configured source server.",
+        ephemeral: true
+      });
+    }
 
-  const dm = new EmbedBuilder()
-    .setColor(0x202225)
-    .setTitle("Rank Update")
-    .setDescription(
-      `You've been ranked to **${role.name}**.\n\n` +
-      `Please join the server below to receive your rank:\n` +
-      process.env.TARGET_INVITE_URL
-    )
-    .setFooter({ text: "Trial Results" })
-    .setTimestamp();
+    const input = i.options.getString("role", true);
+    const result = findRank(input);
 
-  let dmSent = true;
+    if (result.error) {
+      return i.reply({ content: result.error, ephemeral: true });
+    }
 
-  try {
-    await user.send({ embeds: [dm] });
-  } catch {
-    dmSent = false;
-  }
+    await i.deferReply({ ephemeral: true });
 
-  const result = new EmbedBuilder()
-    .setColor(0x202225)
-    .setTitle("Trial Results")
-    .setDescription(
-      `**Player:** ${user}\n` +
-      `**Decision:** Successfully ranked\n` +
-      `**New Rank:** ${role.name}\n` +
-      `**Issued By:** ${i.user}\n\n` +
-      `*The player has been invited to the ranking server to receive their role.*`
-    )
-    .setTimestamp();
+    const source = i.guild;
+    const target = await client.guilds
+      .fetch(process.env.TARGET_GUILD_ID)
+      .catch(() => null);
 
-  try {
-    await channel.send({
-      content: user.toString(),
-      embeds: [result],
-      allowedMentions: { users: [user.id] }
-    });
-  } catch {
-    delete pending[user.id];
+    if (!target) return i.editReply("I can't access the destination server.");
+
+    if (source.id === target.id) {
+      return i.editReply("Source and destination servers must be different.");
+    }
+
+    const channel = await source.channels
+      .fetch(process.env.TRIAL_RESULTS_CHANNEL_ID)
+      .catch(() => null);
+
+    if (!channel?.isTextBased() || !channel.send) {
+      return i.editReply("I couldn't find the trial-results channel.");
+    }
+
+    const member = await source.members.fetch(user.id).catch(() => null);
+
+    if (!member) return i.editReply("That player isn't in the source server.");
+
+    if (user.id === i.user.id || user.id === source.ownerId) {
+      return i.editReply("You can't rank-kick yourself or the server owner.");
+    }
+
+    const role = target.roles.cache.find(
+      r => normalize(r.name) === normalize(result.rank)
+    );
+
+    if (!role || role.managed || role.id === target.id) {
+      return i.editReply(`Create this destination role first:\n${result.rank}`);
+    }
+
+    const sourceBot = source.members.me;
+    const targetBot = await target.members.fetchMe();
+
+    if (!sourceBot?.permissions.has(PermissionFlagsBits.KickMembers)) {
+      return i.editReply("I need Kick Members permission in the source server.");
+    }
+
+    if (member.roles.highest.comparePositionTo(sourceBot.roles.highest) >= 0) {
+      return i.editReply("Move my highest role above the player in the source server.");
+    }
+
+    if (
+      !targetBot.permissions.has(PermissionFlagsBits.ManageRoles) ||
+      targetBot.roles.highest.comparePositionTo(role) <= 0
+    ) {
+      return i.editReply(
+        "I need Manage Roles, with my highest role above the requested rank in the destination server."
+      );
+    }
+
+    pending[user.id] = {
+      rankName: role.name,
+      roleId: role.id,
+      createdAt: Date.now()
+    };
+
     savePending();
-    return i.editReply("I couldn't post the result, so I cancelled the operation. Nobody was kicked.");
-  }
 
-  try {
-    await member.kick(`Ranked to ${role.name}.`);
-  } catch {
+    const dm = new EmbedBuilder()
+      .setColor(0x202225)
+      .setTitle("Rank Update")
+      .setDescription(
+        `You've been ranked to **${role.name}**.\n\n` +
+        `Join the ranking server below to receive your role:\n` +
+        process.env.TARGET_INVITE_URL
+      )
+      .setTimestamp();
+
+    let dmSent = true;
+
+    try {
+      await user.send({ embeds: [dm] });
+    } catch {
+      dmSent = false;
+    }
+
+    const resultEmbed = new EmbedBuilder()
+      .setColor(0x202225)
+      .setTitle("Trial Results")
+      .setDescription(
+        `**Player:** ${user}\n` +
+        `**Decision:** Successfully ranked\n` +
+        `**New Rank:** ${role.name}\n` +
+        `**Issued By:** ${i.user}\n\n` +
+        `*The player has been invited to the ranking server to receive their role.*`
+      )
+      .setTimestamp();
+
+    try {
+      await channel.send({
+        content: user.toString(),
+        embeds: [resultEmbed],
+        allowedMentions: { users: [user.id] }
+      });
+    } catch {
+      delete pending[user.id];
+      savePending();
+      return i.editReply("I couldn't post the result. Nobody was kicked.");
+    }
+
+    try {
+      await member.kick(`Ranked to ${role.name}.`);
+    } catch {
+      return i.editReply(
+        "Result posted, but the kick failed. Check permissions and role hierarchy."
+      );
+    }
+
     return i.editReply(
-      "The result was posted, but the kick failed. Check my permissions and role hierarchy. The pending rank is saved."
+      `Completed. Result posted, DM ${dmSent ? "sent" : "blocked"}, and player kicked from the source server. Their rank will be assigned when they join the destination server.`
     );
   }
-
-  return i.editReply(
-    `Completed. Result posted, DM ${dmSent ? "sent" : "blocked"}, and player kicked from the source server. Their rank will be assigned when they join the destination server.`
-  );
 });
 
+// APPLY SAVED RANK WHEN A PLAYER JOINS DESTINATION SERVER
 client.on(Events.GuildMemberAdd, async member => {
   if (member.guild.id !== process.env.TARGET_GUILD_ID) return;
 
@@ -287,18 +489,19 @@ client.on(Events.GuildMemberAdd, async member => {
     !botMember.permissions.has(PermissionFlagsBits.ManageRoles) ||
     botMember.roles.highest.comparePositionTo(role) <= 0
   ) {
-    console.error(`Cannot assign ${role.name}: check bot permissions and role order.`);
+    console.error("Cannot assign pending rank: check permissions and role order.");
     return;
   }
 
   try {
-    await member.roles.add(role, "Pending trial rank");
+    await member.roles.add(role, "Pending rank from trial results");
+
     delete pending[member.id];
     savePending();
 
-    try {
-      await member.send(`Your rank has been applied: **${role.name}**.`);
-    } catch {}
+    await member.send(
+      `Your rank has been applied: **${role.name}**.`
+    ).catch(() => {});
 
     console.log(`Assigned ${role.name} to ${member.user.tag}`);
   } catch (error) {
@@ -312,7 +515,13 @@ async function start() {
       process.env.CLIENT_ID,
       process.env.SOURCE_GUILD_ID
     ),
-    { body: [command.toJSON()] }
+    {
+      body: [
+        rankCommand.toJSON(),
+        checkCommand.toJSON(),
+        promoteCommand.toJSON()
+      ]
+    }
   );
 
   await client.login(process.env.DISCORD_TOKEN);
