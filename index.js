@@ -1,184 +1,37 @@
-require('dotenv').config();
+```js
+require("dotenv").config();
 
-const fs = require('node:fs');
-const path = require('node:path');
 const {
   Client,
   GatewayIntentBits,
+  Partials,
   REST,
   Routes,
   SlashCommandBuilder,
   PermissionFlagsBits,
+  AuditLogEvent,
   EmbedBuilder,
-  Events,
-  AuditLogEvent
-} = require('discord.js');
+  ChannelType
+} = require("discord.js");
 
-const required = [
-  'DISCORD_TOKEN',
-  'CLIENT_ID',
-  'SOURCE_GUILD_ID',
-  'TARGET_GUILD_ID',
-  'TRIAL_RESULTS_CHANNEL_ID'
-];
+const fs = require("fs");
+const path = require("path");
 
-const missing = required.filter(key => !process.env[key]);
+const TOKEN = process.env.DISCORD_TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
+const SOURCE_GUILD_ID = process.env.SOURCE_GUILD_ID;
+const TARGET_GUILD_ID = process.env.TARGET_GUILD_ID;
+const TRIAL_RESULTS_CHANNEL_ID = process.env.TRIAL_RESULTS_CHANNEL_ID;
+const TARGET_INVITE_URL = process.env.TARGET_INVITE_URL || "";
+const SECURITY_LOG_CHANNEL_ID =
+  process.env.SECURITY_LOG_CHANNEL_ID ||
+  process.env.RANK_LOG_CHANNEL_ID ||
+  "";
 
-if (missing.length) {
-  console.error(`Missing Railway variables: ${missing.join(', ')}`);
+if (!TOKEN || !CLIENT_ID || !SOURCE_GUILD_ID || !TARGET_GUILD_ID) {
+  console.error("Missing required Railway environment variables.");
   process.exit(1);
 }
-
-const ranks = [
-  '𓆩˙⸸˙𓆪︱top 1',
-  '𓆩˙⸸˙𓆪︱top 3',
-  '𓆩˙⸸˙𓆪︱top 15',
-  '𓆩˙⸸˙𓆪︱best',
-  '𓆩˙⸸˙𓆪︱starting xi',
-  '𓆩˙⸸˙𓆪︱main bench',
-  '𓆩˙⸸˙𓆪︱team A',
-  '𓆩˙⸸˙𓆪︱team B',
-  '𓆩˙⸸˙𓆪︱team C',
-  '𓆩˙⸸˙𓆪︱team D'
-];
-
-const dataFile =
-  process.env.DATA_FILE ||
-  path.join(__dirname, 'data', 'state.json');
-
-fs.mkdirSync(path.dirname(dataFile), { recursive: true });
-
-function loadState() {
-  try {
-    const data = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
-    return {
-      pending: data.pending || {},
-      settings: data.settings || {}
-    };
-  } catch {
-    return { pending: {}, settings: {} };
-  }
-}
-
-const state = loadState();
-
-function saveState() {
-  const temp = `${dataFile}.tmp`;
-  fs.writeFileSync(temp, JSON.stringify(state, null, 2));
-  fs.renameSync(temp, dataFile);
-}
-
-function norm(value) {
-  return String(value)
-    .toLowerCase()
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]/g, '');
-}
-
-function findRank(value) {
-  const query = norm(value);
-
-  if (!query) return { error: 'Enter a rank name.' };
-
-  let matches = ranks.filter(rank => norm(rank) === query);
-
-  if (matches.length === 1) return { rank: matches[0] };
-
-  matches = ranks.filter(rank => norm(rank).includes(query));
-
-  if (matches.length === 1) return { rank: matches[0] };
-
-  return {
-    error: matches.length
-      ? 'Rank name is ambiguous. Enter a more specific name.'
-      : `Unknown rank. Available ranks: ${ranks.join(', ')}`
-  };
-}
-
-const isAdmin = member =>
-  Boolean(member?.permissions?.has(PermissionFlagsBits.Administrator));
-
-function toggleCommand(name, description) {
-  return new SlashCommandBuilder()
-    .setName(name)
-    .setDescription(description)
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .addStringOption(option =>
-      option
-        .setName('state')
-        .setDescription('Enable or disable')
-        .setRequired(true)
-        .addChoices(
-          { name: 'on', value: 'on' },
-          { name: 'off', value: 'off' }
-        )
-    );
-}
-
-const commands = [
-  new SlashCommandBuilder()
-    .setName('rank')
-    .setDescription('Announce trial results and queue a rank.')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .addUserOption(option =>
-      option.setName('user').setDescription('Player').setRequired(true)
-    )
-    .addStringOption(option =>
-      option.setName('role').setDescription('Rank name').setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName('check')
-    .setDescription('Check a player rank in the destination server.')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .addUserOption(option =>
-      option.setName('user').setDescription('Player').setRequired(true)
-    ),
-
-  new SlashCommandBuilder()
-    .setName('promote')
-    .setDescription('Change a player rank in the destination server.')
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
-    .addUserOption(option =>
-      option.setName('user').setDescription('Player').setRequired(true)
-    )
-    .addStringOption(option =>
-      option.setName('rank').setDescription('New rank').setRequired(true)
-    ),
-
-  toggleCommand('antiraid', 'Toggle anti-raid protection.'),
-  toggleCommand('antinuke', 'Toggle anti-nuke monitoring.'),
-
-  new SlashCommandBuilder()
-    .setName('ping')
-    .setDescription('Check bot latency.'),
-
-  new SlashCommandBuilder()
-    .setName('serverinfo')
-    .setDescription('Show server information.'),
-
-  new SlashCommandBuilder()
-    .setName('userinfo')
-    .setDescription('Show user information.')
-    .addUserOption(option =>
-      option.setName('user').setDescription('User').setRequired(false)
-    ),
-
-  new SlashCommandBuilder()
-    .setName('avatar')
-    .setDescription('Show a user avatar.')
-    .addUserOption(option =>
-      option.setName('user').setDescription('User').setRequired(false)
-    ),
-
-  new SlashCommandBuilder()
-    .setName('roleinfo')
-    .setDescription('Show role information.')
-    .addRoleOption(option =>
-      option.setName('role').setDescription('Role').setRequired(true)
-    )
-];
 
 const client = new Client({
   intents: [
@@ -186,851 +39,1102 @@ const client = new Client({
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent
-  ]
+  ],
+  partials: [Partials.Channel, Partials.User, Partials.GuildMember]
 });
 
-const rest = new REST({ version: '10' })
-  .setToken(process.env.DISCORD_TOKEN);
+const COLORS = {
+  main: 0x17191f,
+  success: 0x35c98b,
+  error: 0xe05260,
+  warning: 0xe6ad4b,
+  info: 0x8294ff
+};
 
-function getSettings(guildId) {
-  if (!state.settings[guildId]) {
-    state.settings[guildId] = {
-      antiraid: false,
-      antinuke: false
-    };
-  }
+const FOOTER = "ELITE SECURITY  •  SYSTEM";
 
-  return state.settings[guildId];
-}
+const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, "data", "state.json");
 
-async function securityLog(guild, title, description, color = 0x252525) {
+const defaultState = {
+  antiraid: false,
+  antinuke: false,
+  pending: {},
+  nukeEvents: {},
+  spam: {}
+};
+
+let state = { ...defaultState };
+
+function loadState() {
   try {
-    const channelId =
-      process.env.SECURITY_LOG_CHANNEL_ID ||
-      process.env.RANK_LOG_CHANNEL_ID;
+    const dir = path.dirname(DATA_FILE);
+    fs.mkdirSync(dir, { recursive: true });
 
-    if (!channelId) return;
-
-    const channel = await guild.channels.fetch(channelId).catch(() => null);
-
-    if (!channel?.isTextBased() || !channel.send) return;
-
-    await channel.send({
-      embeds: [
-        new EmbedBuilder()
-          .setColor(color)
-          .setTitle(title)
-          .setDescription(description)
-          .setTimestamp()
-      ]
-    });
-  } catch (error) {
-    console.error('Security log error:', error.message);
-  }
-}
-
-async function setExternalApps(guild, enabled) {
-  let changed = 0;
-
-  for (const channel of guild.channels.cache.values()) {
-    if (!channel.permissionOverwrites?.edit) continue;
-
-    try {
-      await channel.permissionOverwrites.edit(
-        guild.roles.everyone,
-        { UseExternalApps: enabled ? false : null },
-        { reason: `Anti-raid ${enabled ? 'enabled' : 'disabled'}` }
-      );
-
-      changed++;
-    } catch (error) {
-      console.error('External apps permission error:', error.message);
-    }
-  }
-
-  return changed;
-}
-
-const messageHits = new Map();
-const joinHits = new Map();
-const auditHits = new Map();
-
-client.once(Events.ClientReady, bot => {
-  console.log(`Logged in as ${bot.user.tag}`);
-  console.log('Rank, utility and security commands are loading.');
-});
-
-client.on(Events.MessageCreate, async message => {
-  try {
-    if (!message.guild || message.author.bot) return;
-
-    const content = message.content.trim().toLowerCase();
-
-    // Prefix commands: administrators only.
-    if (
-      ['?ping', '?membercount', '?whosflorian'].includes(content)
-    ) {
-      if (!isAdmin(message.member)) {
-        return message.reply('Administrator permission is required.')
-          .catch(() => {});
-      }
-
-      if (content === '?ping') {
-        return message.reply(
-          `Pong! **${client.ws.ping}ms**`
-        ).catch(() => {});
-      }
-
-      if (content === '?whosflorian') {
-        return message.reply('de goat').catch(() => {});
-      }
-
-      const guild = await client.guilds
-        .fetch(process.env.TARGET_GUILD_ID)
-        .catch(() => null);
-
-      if (!guild) {
-        return message.reply('Cannot access the destination server.')
-          .catch(() => {});
-      }
-
-      const fullGuild = await guild.fetch().catch(() => null);
-
-      return message.reply(
-        `**${fullGuild?.name || guild.name}** has **${(
-          fullGuild?.memberCount ?? guild.memberCount ?? 0
-        ).toLocaleString()}** members.`
-      ).catch(() => {});
-    }
-
-    if (!getSettings(message.guild.id).antiraid) return;
-
-    const key = `${message.guild.id}:${message.author.id}`;
-    const now = Date.now();
-
-    const hits = (messageHits.get(key) || [])
-      .filter(time => now - time < 6000);
-
-    hits.push(now);
-    messageHits.set(key, hits);
-
-    if (hits.length >= 6) {
-      const member = await message.guild.members
-        .fetch(message.author.id)
-        .catch(() => null);
-
-      if (member && !isAdmin(member) && member.moderatable) {
-        await member.timeout(
-          60000,
-          'Anti-raid: rapid message spam'
-        ).catch(error => {
-          console.error('Timeout error:', error.message);
-        });
-
-        await securityLog(
-          message.guild,
-          'Anti-Raid: Spam Detected',
-          `${message.author} triggered the message-spam threshold.`,
-          0xe67e22
-        );
-
-        messageHits.delete(key);
-      }
+    if (fs.existsSync(DATA_FILE)) {
+      const saved = JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+      state = { ...defaultState, ...saved };
+    } else {
+      saveState();
     }
   } catch (error) {
-    console.error('Message handler error:', error);
-  }
-});
-
-async function monitorDestructiveAction(guild, type, label) {
-  if (!getSettings(guild.id).antinuke) return;
-
-  try {
-    const logs = await guild.fetchAuditLogs({ type, limit: 1 });
-    const entry = logs.entries.first();
-
-    if (
-      !entry ||
-      Date.now() - entry.createdTimestamp > 15000 ||
-      !entry.executor ||
-      entry.executor.id === client.user.id ||
-      entry.executor.id === guild.ownerId
-    ) {
-      return;
-    }
-
-    const key = `${guild.id}:${entry.executor.id}`;
-    const now = Date.now();
-
-    const hits = (auditHits.get(key) || [])
-      .filter(time => now - time < 30000);
-
-    hits.push(now);
-    auditHits.set(key, hits);
-
-    await securityLog(
-      guild,
-      'Anti-Nuke Alert',
-      `**Action:** ${label}\n**Actor:** ${entry.executor} (\`${entry.executor.id}\`)\n**Recent monitored actions:** ${hits.length}`,
-      0xe74c3c
-    );
-
-    if (hits.length < 2) return;
-
-    const member = await guild.members
-      .fetch(entry.executor.id)
-      .catch(() => null);
-
-    if (!member?.manageable) return;
-
-    const dangerous = [
-      PermissionFlagsBits.Administrator,
-      PermissionFlagsBits.ManageGuild,
-      PermissionFlagsBits.ManageChannels,
-      PermissionFlagsBits.ManageRoles,
-      PermissionFlagsBits.ManageWebhooks,
-      PermissionFlagsBits.KickMembers,
-      PermissionFlagsBits.BanMembers
-    ];
-
-    for (const role of member.roles.cache.values()) {
-      if (
-        role.managed ||
-        role.id === guild.id ||
-        !role.permissions.any(dangerous)
-      ) {
-        continue;
-      }
-
-      await member.roles.remove(
-        role,
-        'Anti-nuke: repeated destructive actions'
-      ).catch(error => {
-        console.error('Role removal error:', error.message);
-      });
-    }
-
-    await securityLog(
-      guild,
-      'Anti-Nuke Response',
-      `Attempted to remove manageable dangerous roles from ${entry.executor}.`,
-      0xc0392b
-    );
-  } catch (error) {
-    console.error('Anti-nuke monitoring error:', error);
+    console.error("State loading failed:", error.message);
+    state = { ...defaultState };
   }
 }
 
-client.on(Events.ChannelDelete, channel => {
-  if (channel.guild) {
-    void monitorDestructiveAction(
-      channel.guild,
-      AuditLogEvent.ChannelDelete,
-      `Deleted channel: ${channel.name}`
-    );
+function saveState() {
+  try {
+    fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
+    fs.writeFileSync(DATA_FILE, JSON.stringify(state, null, 2));
+  } catch (error) {
+    console.error("State saving failed:", error.message);
   }
-});
+}
 
-client.on(Events.RoleDelete, role => {
-  void monitorDestructiveAction(
-    role.guild,
-    AuditLogEvent.RoleDelete,
-    `Deleted role: ${role.name}`
+loadState();
+
+function makeEmbed(title, description, color = COLORS.main) {
+  return new EmbedBuilder()
+    .setColor(color)
+    .setTitle(title)
+    .setDescription(description || "No additional information.")
+    .setFooter({ text: FOOTER })
+    .setTimestamp();
+}
+
+function successEmbed(title, description) {
+  return makeEmbed(title, description, COLORS.success);
+}
+
+function errorEmbed(title, description) {
+  return makeEmbed(title, description, COLORS.error);
+}
+
+function warningEmbed(title, description) {
+  return makeEmbed(title, description, COLORS.warning);
+}
+
+function infoEmbed(title, description) {
+  return makeEmbed(title, description, COLORS.info);
+}
+
+function statusText(enabled) {
+  return enabled ? "ENABLED" : "DISABLED";
+}
+
+function statusEmbed(name, enabled, details) {
+  return makeEmbed(
+    `${enabled ? "🛡️" : "⚙️"}  ${name.toUpperCase()}`,
+    [
+      `**Status:** ${enabled ? "🟢 ENABLED" : "🔴 DISABLED"}`,
+      "",
+      details
+    ].join("\n"),
+    enabled ? COLORS.success : COLORS.warning
   );
-});
+}
 
-client.on(Events.WebhooksUpdate, channel => {
-  void monitorDestructiveAction(
-    channel.guild,
-    AuditLogEvent.WebhookUpdate,
-    `Webhook changed in #${channel.name}`
-  );
-});
-
-client.on(Events.GuildMemberAdd, async member => {
+async function sendLog(guild, embed) {
   try {
-    const pending = state.pending[member.id];
+    let channel = null;
 
-    if (
-      member.guild.id === process.env.TARGET_GUILD_ID &&
-      pending
-    ) {
-      const role =
-        member.guild.roles.cache.get(pending.roleId) ||
-        member.guild.roles.cache.find(
-          item => norm(item.name) === norm(pending.rankName)
-        );
-
-      if (role && !role.managed && role.id !== member.guild.id) {
-        const botMember = await member.guild.members.fetchMe();
-
-        if (
-          botMember.permissions.has(PermissionFlagsBits.ManageRoles) &&
-          botMember.roles.highest.comparePositionTo(role) > 0
-        ) {
-          await member.roles.add(role, 'Pending trial rank');
-
-          delete state.pending[member.id];
-          saveState();
-
-          await member.send(
-            `Your rank has been applied: **${role.name}**.`
-          ).catch(() => {});
-        }
-      }
+    if (SECURITY_LOG_CHANNEL_ID) {
+      channel = await guild.channels
+        .fetch(SECURITY_LOG_CHANNEL_ID)
+        .catch(() => null);
     }
 
-    if (member.user.bot) {
-      void monitorDestructiveAction(
-        member.guild,
-        AuditLogEvent.BotAdd,
-        `Added bot: ${member.user.tag}`
+    if (!channel) {
+      channel = guild.channels.cache.find(
+        c =>
+          c.type === ChannelType.GuildText &&
+          /security|mod-log|logs|audit/i.test(c.name) &&
+          c.permissionsFor(guild.members.me)?.has(
+            PermissionFlagsBits.SendMessages
+          )
       );
     }
 
-    if (!getSettings(member.guild.id).antiraid) return;
-
-    const now = Date.now();
-
-    const hits = (joinHits.get(member.guild.id) || [])
-      .filter(time => now - time < 15000);
-
-    hits.push(now);
-    joinHits.set(member.guild.id, hits);
-
-    if (hits.length === 8) {
-      await securityLog(
-        member.guild,
-        'Anti-Raid: Join Burst',
-        'Eight members joined within 15 seconds. Check the join list and Discord Raid Protection.',
-        0xe67e22
-      );
+    if (channel?.isTextBased()) {
+      await channel.send({ embeds: [embed] });
     }
   } catch (error) {
-    console.error('Member join handler error:', error);
+    console.error("Log sending failed:", error.message);
   }
+}
+
+function isAdmin(member) {
+  return Boolean(
+    member?.permissions?.has(PermissionFlagsBits.Administrator)
+  );
+}
+
+async function requireAdmin(interaction) {
+  if (isAdmin(interaction.member)) return true;
+
+  const embed = errorEmbed(
+    "ACCESS DENIED",
+    "You need the **Administrator** permission to use this command."
+  );
+
+  if (interaction.deferred || interaction.replied) {
+    await interaction.editReply({ embeds: [embed] }).catch(() => {});
+  } else {
+    await interaction.reply({
+      embeds: [embed],
+      ephemeral: true
+    }).catch(() => {});
+  }
+
+  return false;
+}
+
+async function editInteraction(interaction, embed, ephemeral = false) {
+  if (interaction.deferred || interaction.replied) {
+    return interaction.editReply({ embeds: [embed] }).catch(() => {});
+  }
+
+  return interaction.reply({
+    embeds: [embed],
+    ephemeral
+  }).catch(() => {});
+}
+
+async function deferInteraction(interaction, ephemeral = true) {
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferReply({ ephemeral }).catch(() => {});
+  }
+}
+
+async function getGuild(guildId) {
+  return client.guilds.fetch(guildId).catch(() => null);
+}
+
+async function getMember(guild, userId) {
+  if (!guild) return null;
+  return guild.members.fetch(userId).catch(() => null);
+}
+
+async function getAuditExecutor(guild, type, targetId) {
+  try {
+    const logs = await guild.fetchAuditLogs({ type, limit: 6 });
+    const now = Date.now();
+
+    return logs.entries.find(entry => {
+      if (!entry.executor || entry.executor.bot) return false;
+      if (now - entry.createdTimestamp > 15000) return false;
+      if (targetId && entry.target?.id !== targetId) return false;
+      return true;
+    })?.executor || null;
+  } catch {
+    return null;
+  }
+}
+
+const commands = [
+  new SlashCommandBuilder()
+    .setName("ping")
+    .setDescription("Check bot response and API latency"),
+
+  new SlashCommandBuilder()
+    .setName("antiraid")
+    .setDescription("Enable or disable anti-raid protection")
+    .addStringOption(option =>
+      option
+        .setName("state")
+        .setDescription("Protection state")
+        .setRequired(true)
+        .addChoices(
+          { name: "Enable", value: "on" },
+          { name: "Disable", value: "off" }
+        )
+    ),
+
+  new SlashCommandBuilder()
+    .setName("antinuke")
+    .setDescription("Enable or disable anti-nuke protection")
+    .addStringOption(option =>
+      option
+        .setName("state")
+        .setDescription("Protection state")
+        .setRequired(true)
+        .addChoices(
+          { name: "Enable", value: "on" },
+          { name: "Disable", value: "off" }
+        )
+    ),
+
+  new SlashCommandBuilder()
+    .setName("rank")
+    .setDescription("Publish a trial result and send a destination invite")
+    .addUserOption(option =>
+      option.setName("user").setDescription("Trial participant").setRequired(true)
+    )
+    .addRoleOption(option =>
+      option.setName("role").setDescription("Rank to assign in the destination server").setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("check")
+    .setDescription("Check a member's rank in the destination server")
+    .addUserOption(option =>
+      option.setName("user").setDescription("Member to check").setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("promote")
+    .setDescription("Change a member's rank in the destination server")
+    .addUserOption(option =>
+      option.setName("user").setDescription("Member to promote").setRequired(true)
+    )
+    .addStringOption(option =>
+      option.setName("rank").setDescription("Exact destination role name").setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("serverinfo")
+    .setDescription("Display server information"),
+
+  new SlashCommandBuilder()
+    .setName("userinfo")
+    .setDescription("Display member information")
+    .addUserOption(option =>
+      option.setName("user").setDescription("Member to inspect").setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("avatar")
+    .setDescription("Display a member's avatar")
+    .addUserOption(option =>
+      option.setName("user").setDescription("Member to inspect").setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName("roleinfo")
+    .setDescription("Display information about a role")
+    .addRoleOption(option =>
+      option.setName("role").setDescription("Role to inspect").setRequired(true)
+    )
+].map(command => command.toJSON());
+
+async function registerCommands() {
+  try {
+    const rest = new REST({ version: "10" }).setToken(TOKEN);
+
+    await rest.put(
+      Routes.applicationGuildCommands(CLIENT_ID, SOURCE_GUILD_ID),
+      { body: commands }
+    );
+
+    console.log("Slash commands registered successfully.");
+  } catch (error) {
+    console.error("Command registration failed:", error);
+  }
+}
+
+client.once("ready", async () => {
+  console.log(`Logged in as ${client.user.tag}`);
+  await registerCommands();
 });
 
-client.on(Events.InteractionCreate, async interaction => {
+client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
+  const command = interaction.commandName;
+
   try {
-    const name = interaction.commandName;
+    if (command === "ping") {
+      await deferInteraction(interaction, false);
 
-    const adminCommands = [
-      'rank',
-      'check',
-      'promote',
-      'antiraid',
-      'antinuke'
-    ];
+      const latency = Math.round(client.ws.ping);
 
-    if (
-      adminCommands.includes(name) &&
-      (!interaction.inGuild() || !isAdmin(interaction.member))
-    ) {
-      return interaction.reply({
-        content: 'Administrator permission is required.',
-        ephemeral: true
-      });
+      const embed = makeEmbed(
+        "CONNECTION STATUS",
+        [
+          "The bot is online and responding.",
+          "",
+          `**WebSocket latency:** \`${latency} ms\``,
+          `**Uptime:** <t:${Math.floor((Date.now() - client.uptime) / 1000)}:R>`,
+          "**Status:** 🟢 Operational"
+        ].join("\n"),
+        COLORS.success
+      );
+
+      return editInteraction(interaction, embed);
     }
 
-    // /ping
-    if (name === 'ping') {
-      return interaction.reply({
-        content: `Pong! **${client.ws.ping}ms**`,
-        ephemeral: true
-      });
-    }
+    if (command === "antiraid") {
+      await deferInteraction(interaction, true);
+      if (!(await requireAdmin(interaction))) return;
 
-    // /serverinfo
-    if (name === 'serverinfo') {
-      if (!interaction.guild) {
-        return interaction.reply({
-          content: 'Use this command in a server.',
-          ephemeral: true
-        });
-      }
-
-      const guild = await interaction.guild.fetch();
-
-      return interaction.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0x252525)
-            .setTitle(guild.name)
-            .setThumbnail(guild.iconURL())
-            .setDescription(
-              `**Members:** ${guild.memberCount}\n` +
-              `**Owner ID:** ${guild.ownerId}\n` +
-              `**Channels:** ${guild.channels.cache.size}\n` +
-              `**Roles:** ${guild.roles.cache.size}\n` +
-              `**Created:** <t:${Math.floor(guild.createdTimestamp / 1000)}:D>`
-            )
-        ],
-        ephemeral: true
-      });
-    }
-
-    // /userinfo
-    if (name === 'userinfo') {
-      const user =
-        interaction.options.getUser('user') || interaction.user;
-
-      const member = interaction.guild
-        ? await interaction.guild.members.fetch(user.id).catch(() => null)
-        : null;
-
-      const roles = member
-        ? member.roles.cache
-            .filter(role => role.id !== interaction.guild.id)
-            .map(role => role.name)
-            .join(', ') || 'None'
-        : 'Unavailable';
-
-      return interaction.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0x252525)
-            .setTitle('User Information')
-            .setThumbnail(user.displayAvatarURL())
-            .setDescription(
-              `**User:** ${user}\n` +
-              `**ID:** \`${user.id}\`\n` +
-              `**Created:** <t:${Math.floor(user.createdTimestamp / 1000)}:F>\n` +
-              `**Joined:** ${member?.joinedTimestamp ? `<t:${Math.floor(member.joinedTimestamp / 1000)}:F>` : 'Not in this server'}\n` +
-              `**Roles:** ${roles}`
-            )
-        ],
-        ephemeral: true
-      });
-    }
-
-    // /avatar
-    if (name === 'avatar') {
-      const user =
-        interaction.options.getUser('user') || interaction.user;
-
-      return interaction.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0x252525)
-            .setTitle(`${user.username}'s Avatar`)
-            .setImage(user.displayAvatarURL({ size: 1024 }))
-        ],
-        ephemeral: true
-      });
-    }
-
-    // /roleinfo
-    if (name === 'roleinfo') {
-      const role = interaction.options.getRole('role', true);
-
-      return interaction.reply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(role.color || 0x252525)
-            .setTitle('Role Information')
-            .setDescription(
-              `**Role:** ${role}\n` +
-              `**ID:** \`${role.id}\`\n` +
-              `**Members:** ${role.members.size}\n` +
-              `**Position:** ${role.position}\n` +
-              `**Mentionable:** ${role.mentionable ? 'Yes' : 'No'}`
-            )
-        ],
-        ephemeral: true
-      });
-    }
-
-    // /antiraid on|off and /antinuke on|off
-    if (name === 'antiraid' || name === 'antinuke') {
-      const enabled =
-        interaction.options.getString('state') === 'on';
-
-      const settings = getSettings(interaction.guild.id);
-      settings[name] = enabled;
+      const enabled = interaction.options.getString("state") === "on";
+      state.antiraid = enabled;
       saveState();
 
-      let extra = '';
+      const embed = statusEmbed(
+        "Anti-Raid Protection",
+        enabled,
+        enabled
+          ? "Spam detection and join-burst monitoring are now active."
+          : "Spam detection and join-burst monitoring have been disabled."
+      );
 
-      if (name === 'antiraid') {
-        if (enabled) {
-          const count = await setExternalApps(interaction.guild, true);
-          extra = ` External Apps denied in ${count} accessible channels.`;
-        } else {
-          await setExternalApps(interaction.guild, false);
-        }
-      }
-
-      await securityLog(
+      await sendLog(
         interaction.guild,
-        `${name} Configuration`,
-        `**Changed by:** ${interaction.user}\n**Status:** ${enabled ? 'Enabled' : 'Disabled'}${extra}`,
-        enabled ? 0x2ecc71 : 0x95a5a6
-      );
-
-      return interaction.reply({
-        content: `**${name} ${enabled ? 'enabled' : 'disabled'}.**${extra}`,
-        ephemeral: true
-      });
-    }
-
-    // /check
-    if (name === 'check') {
-      await interaction.deferReply({ ephemeral: true });
-
-      const user = interaction.options.getUser('user', true);
-
-      const guild = await client.guilds
-        .fetch(process.env.TARGET_GUILD_ID)
-        .catch(() => null);
-
-      if (!guild) {
-        return interaction.editReply(
-          'Cannot access the destination server.'
-        );
-      }
-
-      const member = await guild.members
-        .fetch(user.id)
-        .catch(() => null);
-
-      if (!member) {
-        return interaction.editReply(
-          'That player is not in the destination server.'
-        );
-      }
-
-      const found = member.roles.cache
-        .filter(role =>
-          ranks.some(rank => norm(rank) === norm(role.name))
+        makeEmbed(
+          "ANTI-RAID CONFIGURATION",
+          `**Moderator:** ${interaction.user}\n**Status:** ${statusText(enabled)}`,
+          enabled ? COLORS.success : COLORS.warning
         )
-        .map(role => role.name);
+      );
 
-      return interaction.editReply({
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0x252525)
-            .setTitle('Rank Check')
-            .setThumbnail(user.displayAvatarURL())
-            .setDescription(
-              `**Player:** ${user}\n` +
-              `**Server:** ${guild.name}\n` +
-              `**Rank:** ${found.join(', ') || 'Unranked'}`
-            )
-        ]
-      });
+      return editInteraction(interaction, embed);
     }
 
-    // /promote
-    if (name === 'promote') {
-      await interaction.deferReply({ ephemeral: true });
+    if (command === "antinuke") {
+      await deferInteraction(interaction, true);
+      if (!(await requireAdmin(interaction))) return;
 
-      const user = interaction.options.getUser('user', true);
-      const result = findRank(
-        interaction.options.getString('rank', true)
+      const enabled = interaction.options.getString("state") === "on";
+      state.antinuke = enabled;
+      saveState();
+
+      const embed = statusEmbed(
+        "Anti-Nuke Protection",
+        enabled,
+        enabled
+          ? "Monitoring supported destructive actions and attempting to limit damage from detected attacks."
+          : "Anti-nuke monitoring has been disabled."
       );
 
-      if (result.error) return interaction.editReply(result.error);
-
-      const guild = await client.guilds
-        .fetch(process.env.TARGET_GUILD_ID)
-        .catch(() => null);
-
-      if (!guild) {
-        return interaction.editReply(
-          'Cannot access the destination server.'
-        );
-      }
-
-      const member = await guild.members
-        .fetch(user.id)
-        .catch(() => null);
-
-      if (!member) {
-        return interaction.editReply(
-          'That player is not in the destination server.'
-        );
-      }
-
-      const role = guild.roles.cache.find(
-        item => norm(item.name) === norm(result.rank)
+      await sendLog(
+        interaction.guild,
+        makeEmbed(
+          "ANTI-NUKE CONFIGURATION",
+          `**Moderator:** ${interaction.user}\n**Status:** ${statusText(enabled)}`,
+          enabled ? COLORS.success : COLORS.warning
+        )
       );
 
-      if (!role || role.managed || role.id === guild.id) {
-        return interaction.editReply(
-          'Create that rank role first in the destination server.'
-        );
-      }
-
-      const botMember = await guild.members.fetchMe();
-
-      if (
-        !botMember.permissions.has(PermissionFlagsBits.ManageRoles) ||
-        botMember.roles.highest.comparePositionTo(role) <= 0
-      ) {
-        return interaction.editReply(
-          'Check Manage Roles permission and bot role hierarchy.'
-        );
-      }
-
-      const oldRoles = member.roles.cache.filter(role =>
-        ranks.some(rank => norm(rank) === norm(role.name))
-      );
-
-      try {
-        if (oldRoles.size) {
-          await member.roles.remove([...oldRoles.values()]);
-        }
-
-        await member.roles.add(
-          role,
-          `Promoted by ${interaction.user.tag}`
-        );
-      } catch (error) {
-        console.error('Promotion error:', error);
-
-        return interaction.editReply(
-          'Promotion failed. Check permissions and role hierarchy.'
-        );
-      }
-
-      const description =
-        `**Player:** ${user}\n` +
-        `**Previous rank:** ${oldRoles.map(role => role.name).join(', ') || 'Unranked'}\n` +
-        `**New rank:** ${role.name}\n` +
-        `**By:** ${interaction.user}`;
-
-      await securityLog(guild, 'Rank Promotion Log', description);
-
-      await user.send(
-        `You've been promoted to **${role.name}** in **${guild.name}**.`
-      ).catch(() => {});
-
-      return interaction.editReply({
-        content: `Promoted ${user} to **${role.name}**.`,
-        embeds: [
-          new EmbedBuilder()
-            .setColor(0x252525)
-            .setTitle('Rank Promotion Log')
-            .setDescription(description)
-            .setTimestamp()
-        ]
-      });
+      return editInteraction(interaction, embed);
     }
 
-    // /rank
-    if (name === 'rank') {
-      if (interaction.guildId !== process.env.SOURCE_GUILD_ID) {
-        return interaction.reply({
-          content: 'Use this command in the source server.',
-          ephemeral: true
-        });
+    if (command === "rank") {
+      await deferInteraction(interaction, true);
+      if (!(await requireAdmin(interaction))) return;
+
+      const user = interaction.options.getUser("user");
+      const role = interaction.options.getRole("role");
+
+      const sourceGuild = await getGuild(SOURCE_GUILD_ID);
+      const targetGuild = await getGuild(TARGET_GUILD_ID);
+
+      if (!sourceGuild || !targetGuild) {
+        return editInteraction(
+          interaction,
+          errorEmbed("SERVER UNAVAILABLE", "The bot must be in both configured servers.")
+        );
       }
 
-      const user = interaction.options.getUser('user', true);
-      const result = findRank(
-        interaction.options.getString('role', true)
+      const sourceMember = await getMember(sourceGuild, user.id);
+
+      if (!sourceMember) {
+        return editInteraction(
+          interaction,
+          errorEmbed("MEMBER NOT FOUND", "That user is not a member of the source server.")
+        );
+      }
+
+      const targetRole = targetGuild.roles.cache.find(
+        r => r.name.toLowerCase() === role.name.toLowerCase()
       );
 
-      if (result.error) {
-        return interaction.reply({
-          content: result.error,
-          ephemeral: true
-        });
-      }
-
-      await interaction.deferReply({ ephemeral: true });
-
-      const source = interaction.guild;
-
-      const target = await client.guilds
-        .fetch(process.env.TARGET_GUILD_ID)
-        .catch(() => null);
-
-      if (!target) {
-        return interaction.editReply(
-          'Cannot access the destination server.'
-        );
-      }
-
-      if (source.id === target.id) {
-        return interaction.editReply(
-          'Source and destination servers must be different.'
-        );
-      }
-
-      const channel = await source.channels
-        .fetch(process.env.TRIAL_RESULTS_CHANNEL_ID)
-        .catch(() => null);
-
-      if (!channel?.isTextBased() || !channel.send) {
-        return interaction.editReply(
-          'Cannot find the trial-results text channel.'
-        );
-      }
-
-      const member = await source.members
-        .fetch(user.id)
-        .catch(() => null);
-
-      if (!member) {
-        return interaction.editReply(
-          'Player is not in the source server.'
-        );
-      }
-
-      if (user.id === interaction.user.id || user.id === source.ownerId) {
-        return interaction.editReply(
-          'You cannot rank-kick yourself or the server owner.'
-        );
-      }
-
-      const role = target.roles.cache.find(
-        item => norm(item.name) === norm(result.rank)
-      );
-
-      if (!role || role.managed || role.id === target.id) {
-        return interaction.editReply(
-          'Create that rank role in the destination server first.'
-        );
-      }
-
-      const sourceBot = source.members.me;
-      const targetBot = await target.members.fetchMe();
-
-      if (
-        !sourceBot?.permissions.has(PermissionFlagsBits.KickMembers) ||
-        member.roles.highest.comparePositionTo(sourceBot.roles.highest) >= 0
-      ) {
-        return interaction.editReply(
-          'Check Kick Members permission and source role hierarchy.'
-        );
-      }
-
-      if (
-        !targetBot.permissions.has(PermissionFlagsBits.ManageRoles) ||
-        targetBot.roles.highest.comparePositionTo(role) <= 0
-      ) {
-        return interaction.editReply(
-          'Check Manage Roles permission and destination role hierarchy.'
+      if (!targetRole) {
+        return editInteraction(
+          interaction,
+          errorEmbed(
+            "RANK NOT FOUND",
+            `The destination server does not have a role named **${role.name}**. Create the role there first.`
+          )
         );
       }
 
       state.pending[user.id] = {
-        rankName: role.name,
-        roleId: role.id,
-        createdAt: Date.now()
+        roleName: targetRole.name,
+        roleId: targetRole.id,
+        issuedAt: Date.now()
       };
-
       saveState();
 
-      let dmSent = true;
+      let dmSent = false;
 
       try {
-        const invite = process.env.TARGET_INVITE_URL;
+        const dmEmbed = makeEmbed(
+          "TRIAL RESULTS",
+          [
+            `Your trial result has been processed.`,
+            "",
+            `**Assigned rank:** ${targetRole.name}`,
+            "",
+            TARGET_INVITE_URL
+              ? `**Join the destination server:** ${TARGET_INVITE_URL}`
+              : "Please contact a staff member for the destination server invite."
+          ].join("\n"),
+          COLORS.success
+        );
 
+        await user.send({ embeds: [dmEmbed] });
+        dmSent = true;
+      } catch {}
+
+      if (TRIAL_RESULTS_CHANNEL_ID) {
+        const resultsChannel = await sourceGuild.channels
+          .fetch(TRIAL_RESULTS_CHANNEL_ID)
+          .catch(() => null);
+
+        if (resultsChannel?.isTextBased()) {
+          await resultsChannel.send({
+            embeds: [
+              makeEmbed(
+                "TRIAL RESULT",
+                [
+                  `**Participant:** ${user}`,
+                  `**Rank:** ${targetRole.name}`,
+                  `**Processed by:** ${interaction.user}`,
+                  `**DM delivered:** ${dmSent ? "Yes" : "No"}`
+                ].join("\n"),
+                COLORS.success
+              )
+            ]
+          }).catch(() => {});
+        }
+      }
+
+      let kicked = false;
+      let kickError = "";
+
+      try {
+        if (sourceMember.kickable) {
+          await sourceMember.kick(`Trial result processed by ${interaction.user.tag}`);
+          kicked = true;
+        } else {
+          kickError = "The bot cannot kick this member. Check its role hierarchy and Kick Members permission.";
+        }
+      } catch (error) {
+        kickError = error.message;
+      }
+
+      const result = makeEmbed(
+        "RANK PROCESSING COMPLETE",
+        [
+          `**Participant:** ${user}`,
+          `**Destination rank:** ${targetRole.name}`,
+          `**Trial DM:** ${dmSent ? "Delivered" : "Could not be delivered"}`,
+          `**Source server removal:** ${kicked ? "Completed" : "Not completed"}`,
+          `**Destination rank assignment:** Pending until the member joins`,
+          "",
+          kickError ? `**Note:** ${kickError}` : ""
+        ].filter(Boolean).join("\n"),
+        kicked ? COLORS.success : COLORS.warning
+      );
+
+      await sendLog(
+        sourceGuild,
+        makeEmbed(
+          "RANK ACTION LOG",
+          [
+            `**Staff:** ${interaction.user}`,
+            `**Member:** ${user.tag} (${user.id})`,
+            `**Rank:** ${targetRole.name}`,
+            `**Kicked:** ${kicked ? "Yes" : "No"}`
+          ].join("\n"),
+          COLORS.info
+        )
+      );
+
+      return editInteraction(interaction, result);
+    }
+
+    if (command === "check") {
+      await deferInteraction(interaction, true);
+      if (!(await requireAdmin(interaction))) return;
+
+      const user = interaction.options.getUser("user");
+      const targetGuild = await getGuild(TARGET_GUILD_ID);
+
+      if (!targetGuild) {
+        return editInteraction(
+          interaction,
+          errorEmbed("SERVER UNAVAILABLE", "The destination server could not be found.")
+        );
+      }
+
+      const member = await getMember(targetGuild, user.id);
+
+      if (!member) {
+        return editInteraction(
+          interaction,
+          warningEmbed("MEMBER NOT FOUND", `${user} is not in the destination server.`)
+        );
+      }
+
+      const roles = member.roles.cache
+        .filter(role => role.id !== targetGuild.id)
+        .sort((a, b) => b.position - a.position)
+        .map(role => role.name);
+
+      const embed = makeEmbed(
+        "MEMBER RANK CHECK",
+        [
+          `**Member:** ${user}`,
+          `**Account ID:** \`${user.id}\``,
+          "",
+          "**Roles**",
+          roles.length ? roles.map(role => `• ${role}`).join("\n") : "No assigned roles."
+        ].join("\n"),
+        COLORS.info
+      );
+
+      return editInteraction(interaction, embed);
+    }
+
+    if (command === "promote") {
+      await deferInteraction(interaction, true);
+      if (!(await requireAdmin(interaction))) return;
+
+      const user = interaction.options.getUser("user");
+      const rankName = interaction.options.getString("rank").trim();
+      const targetGuild = await getGuild(TARGET_GUILD_ID);
+
+      if (!targetGuild) {
+        return editInteraction(
+          interaction,
+          errorEmbed("SERVER UNAVAILABLE", "The destination server could not be found.")
+        );
+      }
+
+      const member = await getMember(targetGuild, user.id);
+
+      if (!member) {
+        return editInteraction(
+          interaction,
+          warningEmbed("MEMBER NOT FOUND", `${user} is not in the destination server.`)
+        );
+      }
+
+      const role = targetGuild.roles.cache.find(
+        r => r.name.toLowerCase() === rankName.toLowerCase()
+      );
+
+      if (!role) {
+        return editInteraction(
+          interaction,
+          errorEmbed("RANK NOT FOUND", `No destination role matches **${rankName}**.`)
+        );
+      }
+
+      if (
+        role.managed ||
+        role.position >= targetGuild.members.me.roles.highest.position
+      ) {
+        return editInteraction(
+          interaction,
+          errorEmbed(
+            "ROLE HIERARCHY ERROR",
+            "Move the bot's highest role above the rank role and try again."
+          )
+        );
+      }
+
+      const rankNames = [
+        "trial",
+        "reserve",
+        "reserves",
+        "academy",
+        "starter",
+        "captain",
+        "owner",
+        "manager",
+        "player",
+        "member"
+      ];
+
+      const existingRankRoles = member.roles.cache.filter(
+        r =>
+          r.id !== targetGuild.id &&
+          rankNames.some(name => r.name.toLowerCase().includes(name))
+      );
+
+      try {
+        if (existingRankRoles.size) {
+          await member.roles.remove(existingRankRoles);
+        }
+
+        await member.roles.add(role);
+      } catch (error) {
+        return editInteraction(
+          interaction,
+          errorEmbed("RANK UPDATE FAILED", `Discord rejected the role change: ${error.message}`)
+        );
+      }
+
+      const embed = makeEmbed(
+        "RANK UPDATED",
+        [
+          `**Member:** ${user}`,
+          `**New rank:** ${role}`,
+          `**Updated by:** ${interaction.user}`,
+          "",
+          "The destination server role has been updated."
+        ].join("\n"),
+        COLORS.success
+      );
+
+      await sendLog(
+        targetGuild,
+        makeEmbed(
+          "PROMOTION LOG",
+          `**Member:** ${user}\n**New rank:** ${role.name}\n**Staff:** ${interaction.user}`,
+          COLORS.info
+        )
+      );
+
+      try {
         await user.send({
           embeds: [
-            new EmbedBuilder()
-              .setColor(0x252525)
-              .setTitle('Rank Update')
-              .setDescription(
-                `You've been ranked to **${role.name}**.` +
-                (invite
-                  ? `\n\nJoin the ranking server to receive your role:\n${invite}`
-                  : '\n\nJoin the ranking server to receive your role.')
-              )
+            makeEmbed(
+              "RANK UPDATE",
+              `Your rank in **${targetGuild.name}** has been updated to **${role.name}**.`,
+              COLORS.success
+            )
           ]
         });
-      } catch {
-        dmSent = false;
-      }
+      } catch {}
 
-      try {
-        await channel.send({
-          content: user.toString(),
-          allowedMentions: { users: [user.id] },
-          embeds: [
-            new EmbedBuilder()
-              .setColor(0x252525)
-              .setTitle('Trial Results')
-              .setDescription(
-                `**Player:** ${user}\n` +
-                `**Decision:** Successfully ranked\n` +
-                `**New Rank:** ${role.name}\n` +
-                `**Issued by:** ${interaction.user}\n\n` +
-                '*Join the ranking server to receive your role.*'
-              )
-              .setTimestamp()
-          ]
-        });
-      } catch (error) {
-        console.error('Trial results error:', error);
+      return editInteraction(interaction, embed);
+    }
 
-        delete state.pending[user.id];
-        saveState();
+    if (command === "serverinfo") {
+      await deferInteraction(interaction, false);
 
-        return interaction.editReply(
-          'Could not post trial results. The player was not kicked.'
+      const guild = interaction.guild;
+      if (!guild) {
+        return editInteraction(
+          interaction,
+          errorEmbed("SERVER UNAVAILABLE", "This command must be used in a server.")
         );
       }
 
-      try {
-        await member.kick(`Ranked to ${role.name}`);
-      } catch (error) {
-        console.error('Kick error:', error);
+      await guild.fetch().catch(() => {});
 
-        return interaction.editReply(
-          'Results posted, but kicking failed. Check permissions and hierarchy.'
-        );
-      }
-
-      return interaction.editReply(
-        `Done. Results posted, DM ${dmSent ? 'sent' : 'blocked'}, and player kicked from the source server. Their rank is queued for the destination server.`
+      const embed = makeEmbed(
+        "SERVER OVERVIEW",
+        [
+          `**Name:** ${guild.name}`,
+          `**Server ID:** \`${guild.id}\``,
+          `**Owner:** <@${guild.ownerId}>`,
+          `**Members:** ${guild.memberCount}`,
+          `**Text channels:** ${guild.channels.cache.filter(c => c.type === ChannelType.GuildText).size}`,
+          `**Voice channels:** ${guild.channels.cache.filter(c => c.type === ChannelType.GuildVoice).size}`,
+          `**Roles:** ${guild.roles.cache.size}`,
+          `**Created:** <t:${Math.floor(guild.createdTimestamp / 1000)}:D>`
+        ].join("\n"),
+        COLORS.info
       );
+
+      const icon = guild.iconURL({ size: 256 });
+      if (icon) embed.setThumbnail(icon);
+
+      return editInteraction(interaction, embed);
+    }
+
+    if (command === "userinfo") {
+      await deferInteraction(interaction, false);
+
+      const user = interaction.options.getUser("user") || interaction.user;
+      const member = await interaction.guild.members.fetch(user.id).catch(() => null);
+
+      const roles = member
+        ? member.roles.cache
+            .filter(role => role.id !== interaction.guild.id)
+            .sort((a, b) => b.position - a.position)
+            .map(role => role.toString())
+            .slice(0, 15)
+        : [];
+
+      const embed = makeEmbed(
+        "USER PROFILE",
+        [
+          `**User:** ${user}`,
+          `**Username:** ${user.tag}`,
+          `**User ID:** \`${user.id}\``,
+          `**Account created:** <t:${Math.floor(user.createdTimestamp / 1000)}:F>`,
+          member
+            ? `**Joined server:** <t:${Math.floor(member.joinedTimestamp / 1000)}:F>`
+            : "**Server membership:** Not a member",
+          "",
+          "**Roles**",
+          roles.length ? roles.join(" ") : "No roles to display."
+        ].join("\n"),
+        COLORS.info
+      ).setThumbnail(user.displayAvatarURL({ size: 256 }));
+
+      return editInteraction(interaction, embed);
+    }
+
+    if (command === "avatar") {
+      await deferInteraction(interaction, false);
+
+      const user = interaction.options.getUser("user") || interaction.user;
+      const avatar = user.displayAvatarURL({ size: 1024 });
+
+      const embed = makeEmbed(
+        "AVATAR VIEWER",
+        `**User:** ${user}\n[Open full-size avatar](${avatar})`,
+        COLORS.info
+      ).setImage(avatar);
+
+      return editInteraction(interaction, embed);
+    }
+
+    if (command === "roleinfo") {
+      await deferInteraction(interaction, false);
+
+      const role = interaction.options.getRole("role");
+
+      const embed = makeEmbed(
+        "ROLE INFORMATION",
+        [
+          `**Role:** ${role}`,
+          `**Role ID:** \`${role.id}\``,
+          `**Color:** \`${role.hexColor}\``,
+          `**Members:** ${role.members.size}`,
+          `**Position:** ${role.position}`,
+          `**Mentionable:** ${role.mentionable ? "Yes" : "No"}`,
+          `**Hoisted:** ${role.hoist ? "Yes" : "No"}`,
+          `**Created:** <t:${Math.floor(role.createdTimestamp / 1000)}:F>`
+        ].join("\n"),
+        COLORS.info
+      );
+
+      return editInteraction(interaction, embed);
     }
   } catch (error) {
-    console.error(`Command ${interaction.commandName} failed:`, error);
+    console.error(`Command /${command} failed:`, error);
 
-    const response = {
-      content: 'Command failed. Check the Railway deployment logs.',
-      ephemeral: true
-    };
+    const embed = errorEmbed(
+      "COMMAND FAILED",
+      "Something went wrong while processing this command. Check the Railway deployment logs for the technical error."
+    );
 
-    if (interaction.deferred) {
-      return interaction.editReply(response).catch(() => {});
-    }
-
-    if (interaction.replied) {
-      return interaction.followUp(response).catch(() => {});
-    }
-
-    return interaction.reply(response).catch(() => {});
+    await editInteraction(interaction, embed, true);
   }
 });
 
-async function start() {
-  console.log('Registering slash commands...');
+client.on("messageCreate", async message => {
+  if (!message.guild || message.author.bot) return;
 
-  await rest.put(
-    Routes.applicationGuildCommands(
-      process.env.CLIENT_ID,
-      process.env.SOURCE_GUILD_ID
-    ),
-    { body: commands.map(command => command.toJSON()) }
+  if (state.antiraid) {
+    const now = Date.now();
+    const key = `${message.guild.id}:${message.author.id}`;
+    const previous = state.spam[key] || [];
+    const recent = previous.filter(timestamp => now - timestamp < 6000);
+
+    recent.push(now);
+    state.spam[key] = recent;
+
+    if (recent.length >= 6) {
+      const member = message.member;
+
+      if (
+        member &&
+        !isAdmin(member) &&
+        member.moderatable
+      ) {
+        try {
+          await member.timeout(60000, "Anti-raid: message spam detected");
+
+          await sendLog(
+            message.guild,
+            warningEmbed(
+              "ANTI-RAID ALERT",
+              `**Member:** ${message.author}\n**Action:** 60-second timeout\n**Reason:** Message spam detected.`
+            )
+          );
+        } catch (error) {
+          console.error("Anti-raid timeout failed:", error.message);
+        }
+      }
+
+      state.spam[key] = [];
+    }
+  }
+
+  if (!message.content.startsWith("?")) return;
+
+  const args = message.content.slice(1).trim().split(/\s+/);
+  const command = (args.shift() || "").toLowerCase();
+
+  if (!["ping", "membercount", "whosflorian"].includes(command)) return;
+
+  if (!isAdmin(message.member)) {
+    return message.reply({
+      embeds: [
+        errorEmbed(
+          "ACCESS DENIED",
+          "You need the **Administrator** permission to use this prefix command."
+        )
+      ]
+    }).catch(() => {});
+  }
+
+  try {
+    if (command === "ping") {
+      return message.reply({
+        embeds: [
+          makeEmbed(
+            "CONNECTION STATUS",
+            [
+              "The bot is online and responding.",
+              "",
+              `**WebSocket latency:** \`${Math.round(client.ws.ping)} ms\``,
+              "**Status:** 🟢 Operational"
+            ].join("\n"),
+            COLORS.success
+          )
+        ]
+      });
+    }
+
+    if (command === "membercount") {
+      const guild = await getGuild(TARGET_GUILD_ID);
+
+      if (!guild) {
+        return message.reply({
+          embeds: [
+            errorEmbed("SERVER UNAVAILABLE", "The destination server could not be found.")
+          ]
+        });
+      }
+
+      await guild.fetch().catch(() => {});
+
+      return message.reply({
+        embeds: [
+          makeEmbed(
+            "DESTINATION SERVER",
+            `**Server:** ${guild.name}\n**Members:** ${guild.memberCount}`,
+            COLORS.info
+          )
+        ]
+      });
+    }
+
+    if (command === "whosflorian") {
+      return message.reply({
+        embeds: [
+          makeEmbed(
+            "COMMUNITY DATABASE",
+            "**de goat**",
+            COLORS.info
+          )
+        ]
+      });
+    }
+  } catch (error) {
+    console.error(`Prefix command ?${command} failed:`, error);
+
+    return message.reply({
+      embeds: [
+        errorEmbed("COMMAND FAILED", "Something went wrong. Check the Railway deployment logs.")
+      ]
+    }).catch(() => {});
+  }
+});
+
+client.on("guildMemberAdd", async member => {
+  if (member.guild.id === TARGET_GUILD_ID) {
+    const pending = state.pending[member.id];
+
+    if (pending) {
+      try {
+        const role =
+          member.guild.roles.cache.get(pending.roleId) ||
+          member.guild.roles.cache.find(
+            r => r.name.toLowerCase() === pending.roleName.toLowerCase()
+          );
+
+        if (role && role.position < member.guild.members.me.roles.highest.position) {
+          await member.roles.add(role, "Pending trial rank assignment");
+          delete state.pending[member.id];
+          saveState();
+
+          await sendLog(
+            member.guild,
+            successEmbed(
+              "PENDING RANK ASSIGNED",
+              `**Member:** ${member.user}\n**Rank:** ${role.name}`
+            )
+          );
+        }
+      } catch (error) {
+        console.error("Pending rank assignment failed:", error.message);
+      }
+    }
+  }
+
+  if (!state.antiraid) return;
+
+  const guild = member.guild;
+  const now = Date.now();
+
+  if (!state.joinTimes) state.joinTimes = {};
+  const previous = (state.joinTimes[guild.id] || []).filter(t => now - t < 15000);
+  previous.push(now);
+  state.joinTimes[guild.id] = previous;
+  saveState();
+
+  if (previous.length >= 8) {
+    await sendLog(
+      guild,
+      warningEmbed(
+        "JOIN-BURST DETECTED",
+        `**Server:** ${guild.name}\n**Recent joins:** ${previous.length} in 15 seconds\n**Action:** Alert logged. Review new members and server permissions.`
+      )
+    );
+
+    state.joinTimes[guild.id] = [];
+    saveState();
+  }
+});
+
+async function handleNukeEvent(guild, type, targetId, description) {
+  if (!state.antinuke) return;
+
+  const now = Date.now();
+  const actor = await getAuditExecutor(guild, type, targetId);
+
+  const key = `${guild.id}:${actor?.id || "unknown"}`;
+  const events = (state.nukeEvents[key] || []).filter(t => now - t < 30000);
+  events.push(now);
+  state.nukeEvents[key] = events;
+  saveState();
+
+  await sendLog(
+    guild,
+    warningEmbed(
+      "ANTI-NUKE ALERT",
+      [
+        `**Event:** ${description}`,
+        `**Server:** ${guild.name}`,
+        `**Actor:** ${actor ? `${actor.tag} (${actor.id})` : "Unknown — audit log unavailable"}`,
+        `**Events detected:** ${events.length} in 30 seconds`
+      ].join("\n")
+    )
   );
 
-  console.log('Slash commands registered.');
-  await client.login(process.env.DISCORD_TOKEN);
+  if (!actor || actor.id === guild.ownerId || actor.id === client.user.id) return;
+  if (events.length < 2) return;
+
+  try {
+    const member = await guild.members.fetch(actor.id).catch(() => null);
+    if (!member || !guild.members.me) return;
+    if (member.id === guild.ownerId) return;
+    if (member.roles.highest.position >= guild.members.me.roles.highest.position) return;
+
+    const dangerous = member.roles.cache.filter(role =>
+      !role.managed &&
+      role.id !== guild.id &&
+      role.position < guild.members.me.roles.highest.position &&
+      role.permissions.has([
+        PermissionFlagsBits.Administrator,
+        PermissionFlagsBits.ManageGuild,
+        PermissionFlagsBits.ManageRoles,
+        PermissionFlagsBits.ManageChannels,
+        PermissionFlagsBits.KickMembers,
+        PermissionFlagsBits.BanMembers,
+        PermissionFlagsBits.ManageWebhooks
+      ])
+    );
+
+    if (dangerous.size) {
+      await member.roles.remove(dangerous, "Anti-nuke: repeated destructive actions detected");
+
+      await sendLog(
+        guild,
+        errorEmbed(
+          "ANTI-NUKE RESPONSE",
+          `**Member:** ${member.user}\n**Action:** Removed manageable dangerous-permission roles.\n**Note:** This cannot undo deleted channels or other damage.`
+        )
+      );
+    }
+  } catch (error) {
+    console.error("Anti-nuke response failed:", error.message);
+  }
 }
 
-process.on('unhandledRejection', error => {
-  console.error('Unhandled rejection:', error);
+client.on("channelDelete", async channel => {
+  if (!channel.guild) return;
+
+  await handleNukeEvent(
+    channel.guild,
+    AuditLogEvent.ChannelDelete,
+    channel.id,
+    `Channel deleted: #${channel.name}`
+  );
 });
 
-start().catch(error => {
-  console.error('Startup failed:', error);
-  process.exit(1);
+client.on("roleDelete", async role => {
+  await handleNukeEvent(
+    role.guild,
+    AuditLogEvent.RoleDelete,
+    role.id,
+    `Role deleted: ${role.name}`
+  );
 });
+
+client.on("webhookUpdate", async channel => {
+  if (!channel.guild) return;
+
+  await handleNukeEvent(
+    channel.guild,
+    AuditLogEvent.WebhookUpdate,
+    null,
+    `Webhooks updated in #${channel.name}`
+  );
+});
+
+client.on("guildMemberAdd", async member => {
+  if (!state.antinuke || !member.user.bot) return;
+
+  const actor = await getAuditExecutor(
+    member.guild,
+    AuditLogEvent.BotAdd,
+    member.id
+  );
+
+  await sendLog(
+    member.guild,
+    warningEmbed(
+      "BOT ADDITION ALERT",
+      [
+        `**Bot added:** ${member.user}`,
+        `**Added by:** ${actor ? actor.tag : "Unknown"}`,
+        `**Server:** ${member.guild.name}`,
+        "",
+        "Review the bot's permissions and the inviter."
+      ].join("\n")
+    )
+  );
+});
+
+client.on("error", error => {
+  console.error("Discord client error:", error);
+});
+
+process.on("unhandledRejection", error => {
+  console.error("Unhandled rejection:", error);
+});
+
+client.login(TOKEN);
+```
