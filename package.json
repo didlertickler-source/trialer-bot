@@ -1,8 +1,7 @@
-
 {
-  "name": "rank-transfer-bot",
+  "name": "discord-security-rank-bot",
   "version": "1.0.0",
-  "description": "Discord rank transfer bot",
+  "description": "Discord rank, utility, anti-raid and anti-nuke bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
