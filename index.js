@@ -1,3 +1,4 @@
+
 require("dotenv").config();
 
 const {
@@ -33,18 +34,22 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = process.env.CLIENT_ID;
 const SOURCE_GUILD_ID = process.env.SOURCE_GUILD_ID;
 const TARGET_GUILD_ID = process.env.TARGET_GUILD_ID;
-const TRIAL_RESULTS_CHANNEL_ID = process.env.TRIAL_RESULTS_CHANNEL_ID;
+
+const ASKTRIAL_CHANNEL_ID = "1558606277263761468";
+const TRIAL_REQUEST_CHANNEL_ID = "1558792699966914721";
+
+const TRIALER_ROLE_NAME = "𓆩˙⸸˙𓆪︱trialer";
 const TARGET_INVITE_URL = process.env.TARGET_INVITE_URL || "";
 const SECURITY_LOG_CHANNEL_ID =
   process.env.SECURITY_LOG_CHANNEL_ID ||
   process.env.RANK_LOG_CHANNEL_ID ||
   "";
 
-const TRIALER_ROLE_NAME = "𓆩˙⸸˙𓆪︱trialer";
-const DATA_FILE = process.env.DATA_FILE || path.join(__dirname, "data", "state.json");
+const DATA_FILE =
+  process.env.DATA_FILE || path.join(__dirname, "data", "state.json");
 
 if (!TOKEN || !CLIENT_ID || !SOURCE_GUILD_ID || !TARGET_GUILD_ID) {
-  console.error("Missing DISCORD_TOKEN, CLIENT_ID, SOURCE_GUILD_ID or TARGET_GUILD_ID.");
+  console.error("Missing required environment variables.");
   process.exit(1);
 }
 
@@ -76,7 +81,7 @@ function loadState() {
       destructiveActions: {}
     };
   } catch (error) {
-    console.error("Could not load saved state:", error.message);
+    console.error("State load failed:", error.message);
     return { ...defaultState };
   }
 }
@@ -88,7 +93,7 @@ function saveState() {
     fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
     fs.writeFileSync(DATA_FILE, JSON.stringify(state, null, 2));
   } catch (error) {
-    console.error("Could not save state:", error.message);
+    console.error("State save failed:", error.message);
   }
 }
 
@@ -109,7 +114,7 @@ function makeEmbed(title, description, color) {
     .setTimestamp();
 }
 
-async function replyEmbed(interaction, title, description, color, ephemeral) {
+async function replyEmbed(interaction, title, description, color, ephemeral = true) {
   const embed = makeEmbed(title, description, color);
 
   if (interaction.deferred || interaction.replied) {
@@ -118,7 +123,7 @@ async function replyEmbed(interaction, title, description, color, ephemeral) {
 
   return interaction.reply({
     embeds: [embed],
-    ephemeral: ephemeral !== false
+    ephemeral
   });
 }
 
@@ -133,7 +138,7 @@ async function logMessage(title, description, color) {
       embeds: [makeEmbed(title, description, color)]
     });
   } catch (error) {
-    console.error("Log message failed:", error.message);
+    console.error("Logging failed:", error.message);
   }
 }
 
@@ -147,10 +152,10 @@ async function getSourceGuild() {
     await client.guilds.fetch(SOURCE_GUILD_ID).catch(() => null);
 }
 
-function findRole(guild, roleName) {
-  if (!guild || !roleName) return null;
+function findRole(guild, name) {
+  if (!guild || !name) return null;
 
-  const wanted = roleName.trim().toLowerCase();
+  const wanted = name.trim().toLowerCase();
 
   return guild.roles.cache.find(
     role => role.name.toLowerCase() === wanted
@@ -182,12 +187,11 @@ function isKnownRankRole(role) {
 
   const name = role.name.toLowerCase().trim();
 
-  const rankNames = [
+  const knownNames = [
     "starting",
     "starter",
     "start",
     "trial",
-    "trials",
     "reserve",
     "reserves",
     "academy",
@@ -197,17 +201,16 @@ function isKnownRankRole(role) {
     "rank"
   ];
 
-  if (rankNames.some(term => name === term || name.includes(term))) {
-    return true;
-  }
-
-  return state.rankRoleIds.includes(role.id);
+  return knownNames.some(term =>
+    name === term || name.includes(term)
+  ) || state.rankRoleIds.includes(role.id);
 }
 
 async function getRankStatus(userId) {
   const guild = await getTargetGuild();
+
   if (!guild) {
-    return { error: "The target server is unavailable. Please try again later." };
+    return { error: "The target server is unavailable." };
   }
 
   const member = await guild.members.fetch(userId).catch(() => null);
@@ -227,7 +230,9 @@ async function getRankStatus(userId) {
 
 function getOpenTrial(userId) {
   return Object.values(state.trials).find(
-    trial => trial.requesterId === userId && trial.status === "open"
+    trial =>
+      trial.requesterId === userId &&
+      trial.status === "open"
   );
 }
 
@@ -236,25 +241,14 @@ function safeText(value, fallback) {
   return value.trim().slice(0, 1000);
 }
 
-async function getTrialChannel(interaction) {
-  if (TRIAL_RESULTS_CHANNEL_ID) {
-    const channel = await client.channels.fetch(TRIAL_RESULTS_CHANNEL_ID)
-      .catch(() => null);
-
-    if (channel && channel.isTextBased()) return channel;
-  }
-
-  return interaction.channel;
-}
-
 const commands = [
   new SlashCommandBuilder()
     .setName("ping")
-    .setDescription("Check the bot's latency."),
+    .setDescription("Check bot latency."),
 
   new SlashCommandBuilder()
     .setName("antiraid")
-    .setDescription("Enable or disable anti-raid protection.")
+    .setDescription("Toggle anti-raid protection.")
     .addStringOption(option =>
       option.setName("state")
         .setDescription("Protection state")
@@ -267,7 +261,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("antinuke")
-    .setDescription("Enable or disable anti-nuke monitoring.")
+    .setDescription("Toggle anti-nuke monitoring.")
     .addStringOption(option =>
       option.setName("state")
         .setDescription("Protection state")
@@ -300,7 +294,7 @@ const commands = [
     )
     .addStringOption(option =>
       option.setName("areyougood")
-        .setDescription("How would you describe your ability?")
+        .setDescription("Describe your ability")
         .setRequired(true)
         .addChoices(
           { name: "Yes", value: "Yes" },
@@ -314,7 +308,7 @@ const commands = [
     .setDescription("Give a member a rank in the target server.")
     .addUserOption(option =>
       option.setName("user")
-        .setDescription("The member to rank")
+        .setDescription("Member to rank")
         .setRequired(true)
     )
     .addStringOption(option =>
@@ -328,31 +322,31 @@ const commands = [
     .setDescription("Check a member's pending rank.")
     .addUserOption(option =>
       option.setName("user")
-        .setDescription("The member to check")
+        .setDescription("Member to check")
         .setRequired(true)
     ),
 
   new SlashCommandBuilder()
     .setName("promote")
-    .setDescription("Change a member's rank in the target server.")
+    .setDescription("Change a member's rank.")
     .addUserOption(option =>
       option.setName("user")
-        .setDescription("The member to promote")
+        .setDescription("Member to promote")
         .setRequired(true)
     )
     .addStringOption(option =>
       option.setName("rank")
-        .setDescription("Type the exact target-server role name")
+        .setDescription("Exact target-server role name")
         .setRequired(true)
     ),
 
   new SlashCommandBuilder()
     .setName("serverinfo")
-    .setDescription("Show information about this server."),
+    .setDescription("Show server information."),
 
   new SlashCommandBuilder()
     .setName("userinfo")
-    .setDescription("Show information about a member.")
+    .setDescription("Show member information.")
     .addUserOption(option =>
       option.setName("user")
         .setDescription("Member to inspect")
@@ -370,7 +364,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName("roleinfo")
-    .setDescription("Show information about a role.")
+    .setDescription("Show role information.")
     .addRoleOption(option =>
       option.setName("role")
         .setDescription("Role to inspect")
@@ -395,7 +389,7 @@ client.once("ready", async () => {
   try {
     await registerCommands();
   } catch (error) {
-    console.error("Slash command registration failed:", error.message);
+    console.error("Command registration failed:", error.message);
   }
 });
 
@@ -406,12 +400,10 @@ client.on("interactionCreate", async interaction => {
       const member = interaction.member;
 
       if (name === "ping") {
-        const ping = Math.round(client.ws.ping);
-
         return replyEmbed(
           interaction,
           "Pong",
-          "Bot latency: **" + ping + " ms**",
+          "Bot latency: **" + Math.round(client.ws.ping) + " ms**",
           COLORS.green
         );
       }
@@ -455,27 +447,41 @@ client.on("interactionCreate", async interaction => {
       }
 
       if (name === "asktrial") {
+        if (interaction.channelId !== ASKTRIAL_CHANNEL_ID) {
+          return replyEmbed(
+            interaction,
+            "Wrong channel",
+            "You can only use `/asktrial` in <#" +
+              ASKTRIAL_CHANNEL_ID + ">.",
+            COLORS.red
+          );
+        }
+
         await interaction.deferReply({ ephemeral: true });
 
         const status = await getRankStatus(interaction.user.id);
 
         if (status.error) {
-          return replyEmbed(interaction, "Unable to check rank", status.error, COLORS.red);
+          return replyEmbed(
+            interaction,
+            "Unable to check rank",
+            status.error,
+            COLORS.red
+          );
         }
 
         if (status.ranked) {
           return replyEmbed(
             interaction,
             "Trial request unavailable",
-            "You already have a rank in the target server (**" +
-              status.rankRole.name + "**). You cannot submit another trial request.",
+            "You already have the rank **" +
+              status.rankRole.name +
+              "** in the target server. You cannot submit another trial request.",
             COLORS.red
           );
         }
 
-        const existing = getOpenTrial(interaction.user.id);
-
-        if (existing) {
+        if (getOpenTrial(interaction.user.id)) {
           return replyEmbed(
             interaction,
             "Request already open",
@@ -501,8 +507,29 @@ client.on("interactionCreate", async interaction => {
           return replyEmbed(
             interaction,
             "Trial role missing",
-            "I couldn't find the role named **" + TRIALER_ROLE_NAME +
-              "** in the source server. Check the role name.",
+            "I couldn't find the role **" + TRIALER_ROLE_NAME + "**.",
+            COLORS.red
+          );
+        }
+
+        const channel = await client.channels
+          .fetch(TRIAL_REQUEST_CHANNEL_ID)
+          .catch(() => null);
+
+        if (!channel || !channel.isTextBased() || !channel.guild) {
+          return replyEmbed(
+            interaction,
+            "Request channel unavailable",
+            "I couldn't access the configured trial request channel.",
+            COLORS.red
+          );
+        }
+
+        if (channel.guild.id !== SOURCE_GUILD_ID) {
+          return replyEmbed(
+            interaction,
+            "Channel configuration error",
+            "The trial request channel must be in the source server.",
             COLORS.red
           );
         }
@@ -511,38 +538,53 @@ client.on("interactionCreate", async interaction => {
           interaction.options.getString("robloxuser"),
           "Not provided"
         );
+
         const position = safeText(
           interaction.options.getString("position"),
           "Not provided"
         );
+
         const activity = interaction.options.getInteger("activity");
         const ability = interaction.options.getString("areyougood");
+
+        const trialId = interaction.user.id + "-" + Date.now();
 
         const embed = makeEmbed(
           "New Trial Request",
           "A member has submitted a trial request.",
           COLORS.blue
         ).addFields(
-          { name: "Discord User", value: interaction.user.toString(), inline: true },
-          { name: "Roblox Username", value: robloxUser, inline: true },
-          { name: "Position", value: position, inline: true },
-          { name: "Activity", value: activity + "/10", inline: true },
-          { name: "Ability", value: ability, inline: true },
-          { name: "Status", value: "Waiting to be claimed", inline: false }
+          {
+            name: "Discord User",
+            value: interaction.user.toString(),
+            inline: true
+          },
+          {
+            name: "Roblox Username",
+            value: robloxUser,
+            inline: true
+          },
+          {
+            name: "Position",
+            value: position,
+            inline: true
+          },
+          {
+            name: "Activity",
+            value: activity + "/10",
+            inline: true
+          },
+          {
+            name: "Ability",
+            value: ability,
+            inline: true
+          },
+          {
+            name: "Status",
+            value: "Waiting to be claimed",
+            inline: false
+          }
         );
-
-        const channel = await getTrialChannel(interaction);
-
-        if (!channel || !channel.isTextBased()) {
-          return replyEmbed(
-            interaction,
-            "Channel unavailable",
-            "The trial request channel could not be found.",
-            COLORS.red
-          );
-        }
-
-        const trialId = interaction.user.id + "-" + Date.now();
 
         const row = new ActionRowBuilder().addComponents(
           new ButtonBuilder()
@@ -604,34 +646,24 @@ client.on("interactionCreate", async interaction => {
 
         const role = findRole(targetGuild, rankName);
 
-        if (!role) {
+        if (!role || role.id === targetGuild.id || role.managed) {
           return replyEmbed(
             interaction,
             "Rank not found",
-            "There is no role named **" + rankName +
-              "** in the target server. Type the role name exactly.",
-            COLORS.red
-          );
-        }
-
-        if (role.id === targetGuild.id || role.managed) {
-          return replyEmbed(
-            interaction,
-            "Invalid rank",
-            "That role cannot be assigned as a rank.",
+            "I couldn't find an assignable role named **" +
+              rankName + "** in the target server.",
             COLORS.red
           );
         }
 
         if (
-          targetGuild.members.me &&
+          !targetGuild.members.me ||
           role.position >= targetGuild.members.me.roles.highest.position
         ) {
           return replyEmbed(
             interaction,
             "Role hierarchy error",
-            "Move the bot's role above **" + role.name +
-              "** in the target server.",
+            "Move the bot's role above **" + role.name + "**.",
             COLORS.red
           );
         }
@@ -650,15 +682,18 @@ client.on("interactionCreate", async interaction => {
 
         saveState();
 
-        let dmStatus = "The rank is ready to be assigned when the member joins the target server.";
+        let dmStatus = "The rank will be assigned when the member joins the target server.";
 
         try {
           await user.send({
             embeds: [
               makeEmbed(
                 "Trial Result",
-                "Your trial has been processed.\n\nRank: **" + role.name + "**" +
-                  (TARGET_INVITE_URL ? "\n\nJoin the server: " + TARGET_INVITE_URL : ""),
+                "Your trial has been processed.\n\nRank: **" +
+                  role.name + "**" +
+                  (TARGET_INVITE_URL
+                    ? "\n\nJoin the server: " + TARGET_INVITE_URL
+                    : ""),
                 COLORS.green
               )
             ]
@@ -666,31 +701,36 @@ client.on("interactionCreate", async interaction => {
 
           dmStatus = "The member has been sent a DM.";
         } catch {
-          dmStatus = "The member's DMs are closed. Their rank is still pending.";
+          dmStatus = "The member's DMs are closed. Their rank is pending.";
         }
-
-        await logMessage(
-          "Rank approved",
-          "Member: " + user.tag + "\nRank: " + role.name +
-            "\nApproved by: " + interaction.user.tag,
-          COLORS.green
-        );
 
         const sourceGuild = await getSourceGuild();
 
         if (sourceGuild) {
-          const sourceMember = await sourceGuild.members.fetch(user.id).catch(() => null);
+          const sourceMember = await sourceGuild.members
+            .fetch(user.id)
+            .catch(() => null);
 
           if (
             sourceMember &&
             sourceGuild.members.me &&
-            sourceGuild.members.me.permissions.has(PermissionFlagsBits.KickMembers) &&
+            sourceGuild.members.me.permissions.has(
+              PermissionFlagsBits.KickMembers
+            ) &&
             sourceMember.kickable
           ) {
             await sourceMember.kick("Trial processed; rank: " + role.name)
               .catch(() => null);
           }
         }
+
+        await logMessage(
+          "Rank approved",
+          "Member: " + user.tag +
+            "\nRank: " + role.name +
+            "\nApproved by: " + interaction.user.tag,
+          COLORS.green
+        );
 
         return replyEmbed(
           interaction,
@@ -725,7 +765,7 @@ client.on("interactionCreate", async interaction => {
 
         return replyEmbed(
           interaction,
-          "Pending rank",
+          "Pending Rank",
           "Member: " + user.toString() +
             "\nRank: **" + pending.roleName + "**",
           COLORS.blue
@@ -757,13 +797,15 @@ client.on("interactionCreate", async interaction => {
           );
         }
 
-        const targetMember = await targetGuild.members.fetch(user.id).catch(() => null);
+        const targetMember = await targetGuild.members
+          .fetch(user.id)
+          .catch(() => null);
 
         if (!targetMember) {
           return replyEmbed(
             interaction,
             "Member not found",
-            "That user must join the target server before being promoted.",
+            "That user must join the target server first.",
             COLORS.red
           );
         }
@@ -774,7 +816,8 @@ client.on("interactionCreate", async interaction => {
           return replyEmbed(
             interaction,
             "Rank not found",
-            "I couldn't find an assignable role named **" + rankName + "**.",
+            "I couldn't find an assignable role named **" +
+              rankName + "**.",
             COLORS.red
           );
         }
@@ -791,16 +834,17 @@ client.on("interactionCreate", async interaction => {
           );
         }
 
-        const oldRankRoles = targetMember.roles.cache.filter(
-          oldRole => isKnownRankRole(oldRole) &&
+        const oldRoles = targetMember.roles.cache.filter(
+          oldRole =>
             oldRole.id !== targetGuild.id &&
             oldRole.id !== role.id &&
-            !oldRole.managed
+            !oldRole.managed &&
+            isKnownRankRole(oldRole)
         );
 
         try {
-          if (oldRankRoles.size) {
-            await targetMember.roles.remove(oldRankRoles);
+          if (oldRoles.size) {
+            await targetMember.roles.remove(oldRoles);
           }
 
           await targetMember.roles.add(role);
@@ -815,7 +859,7 @@ client.on("interactionCreate", async interaction => {
           return replyEmbed(
             interaction,
             "Promotion failed",
-            "I couldn't update the member's roles. Check my Manage Roles permission and role hierarchy.\n\n" +
+            "Check the bot's Manage Roles permission and role hierarchy.\n" +
               error.message,
             COLORS.red
           );
@@ -823,7 +867,8 @@ client.on("interactionCreate", async interaction => {
 
         await logMessage(
           "Member promoted",
-          "Member: " + user.tag + "\nNew rank: " + role.name +
+          "Member: " + user.tag +
+            "\nNew rank: " + role.name +
             "\nChanged by: " + interaction.user.tag,
           COLORS.green
         );
@@ -844,7 +889,8 @@ client.on("interactionCreate", async interaction => {
           "Server Information",
           "**Name:** " + guild.name +
             "\n**Members:** " + guild.memberCount +
-            "\n**Created:** <t:" + Math.floor(guild.createdTimestamp / 1000) + ":D>" +
+            "\n**Created:** <t:" +
+              Math.floor(guild.createdTimestamp / 1000) + ":D>" +
             "\n**Owner:** <@" + guild.ownerId + ">",
           COLORS.blue
         );
@@ -852,7 +898,9 @@ client.on("interactionCreate", async interaction => {
 
       if (name === "userinfo") {
         const user = interaction.options.getUser("user") || interaction.user;
-        const targetMember = await interaction.guild.members.fetch(user.id).catch(() => null);
+        const targetMember = await interaction.guild.members
+          .fetch(user.id)
+          .catch(() => null);
 
         const roles = targetMember
           ? targetMember.roles.cache
@@ -862,22 +910,22 @@ client.on("interactionCreate", async interaction => {
               .join(", ") || "No roles"
           : "Not in this server";
 
+        const embed = makeEmbed(
+          "User Information",
+          "**User:** " + user.tag +
+            "\n**ID:** " + user.id +
+            "\n**Created:** <t:" +
+              Math.floor(user.createdTimestamp / 1000) + ":F>" +
+            "\n**Joined:** " +
+              (targetMember
+                ? "<t:" + Math.floor(targetMember.joinedTimestamp / 1000) + ":F>"
+                : "Not in this server") +
+            "\n**Roles:** " + roles,
+          COLORS.blue
+        ).setThumbnail(user.displayAvatarURL({ size: 256 }));
+
         return interaction.reply({
-          embeds: [
-            makeEmbed(
-              "User Information",
-              "**User:** " + user.tag +
-                "\n**ID:** " + user.id +
-                "\n**Created:** <t:" + Math.floor(user.createdTimestamp / 1000) + ":F>" +
-                "\n**Joined:** " + (
-                  targetMember
-                    ? "<t:" + Math.floor(targetMember.joinedTimestamp / 1000) + ":F>"
-                    : "Not in this server"
-                ) +
-                "\n**Roles:** " + roles,
-              COLORS.blue
-            ).setThumbnail(user.displayAvatarURL({ size: 256 }))
-          ],
+          embeds: [embed],
           ephemeral: true
         });
       }
@@ -915,9 +963,8 @@ client.on("interactionCreate", async interaction => {
       }
     }
 
-    if (interaction.isButton()) {
-      if (!interaction.customId.startsWith("claimtrial:")) return;
-
+    if (interaction.isButton() &&
+        interaction.customId.startsWith("claimtrial:")) {
       const trialId = interaction.customId.slice("claimtrial:".length);
       const trial = state.trials[trialId];
 
@@ -926,7 +973,7 @@ client.on("interactionCreate", async interaction => {
           embeds: [
             makeEmbed(
               "Request unavailable",
-              "This trial request has already been claimed or is no longer available.",
+              "This request has already been claimed or is no longer available.",
               COLORS.red
             )
           ],
@@ -934,15 +981,14 @@ client.on("interactionCreate", async interaction => {
         });
       }
 
-      const clicker = interaction.member;
-
-      if (!isAdmin(clicker) && !hasTrialerRole(clicker)) {
+      if (!isAdmin(interaction.member) &&
+          !hasTrialerRole(interaction.member)) {
         return interaction.reply({
           embeds: [
             makeEmbed(
               "Permission denied",
-              "Only administrators or members with the **" +
-                TRIALER_ROLE_NAME + "** role can claim trial requests.",
+              "Only administrators or members with **" +
+                TRIALER_ROLE_NAME + "** can claim trial requests.",
               COLORS.red
             )
           ],
@@ -957,25 +1003,24 @@ client.on("interactionCreate", async interaction => {
       trial.claimedAt = Date.now();
       saveState();
 
+      let dmSent = true;
+
       try {
         const requester = await client.users.fetch(trial.requesterId);
 
         await requester.send({
           embeds: [
             makeEmbed(
-              "Your Trial Request Has Been Claimed",
-              "Your request has been claimed by " + interaction.user.tag +
-                ". Please wait for the trial team to contact you with the next steps.",
+              "Trial Request Claimed",
+              "Your trial request has been claimed by " +
+                interaction.user.tag +
+                ". Please wait for the trial team to contact you.",
               COLORS.green
             )
           ]
         });
       } catch {
-        await logMessage(
-          "Trial DM failed",
-          "Couldn't DM the requester with ID " + trial.requesterId + ".",
-          COLORS.yellow
-        );
+        dmSent = false;
       }
 
       const claimedEmbed = makeEmbed(
@@ -983,9 +1028,21 @@ client.on("interactionCreate", async interaction => {
         "This request has been claimed.",
         COLORS.green
       ).addFields(
-        { name: "Claimed By", value: interaction.user.toString(), inline: true },
-        { name: "Requester", value: "<@" + trial.requesterId + ">", inline: true },
-        { name: "Status", value: "Claimed", inline: true }
+        {
+          name: "Requester",
+          value: "<@" + trial.requesterId + ">",
+          inline: true
+        },
+        {
+          name: "Claimed By",
+          value: interaction.user.toString(),
+          inline: true
+        },
+        {
+          name: "Status",
+          value: "Claimed",
+          inline: true
+        }
       );
 
       await interaction.message.edit({
@@ -996,8 +1053,10 @@ client.on("interactionCreate", async interaction => {
       await replyEmbed(
         interaction,
         "Trial claimed",
-        "You claimed this trial request. The requester has been notified by DM.",
-        COLORS.green
+        dmSent
+          ? "The requester has been notified by DM."
+          : "The request is claimed, but the requester could not be DMed.",
+        dmSent ? COLORS.green : COLORS.yellow
       );
 
       await logMessage(
@@ -1012,14 +1071,17 @@ client.on("interactionCreate", async interaction => {
 
     const embed = makeEmbed(
       "Something went wrong",
-      "The command failed. Check the Railway logs for the error.",
+      "The command failed. Check the Railway deployment logs.",
       COLORS.red
     );
 
     if (interaction.deferred) {
       await interaction.editReply({ embeds: [embed] }).catch(() => null);
     } else if (!interaction.replied) {
-      await interaction.reply({ embeds: [embed], ephemeral: true }).catch(() => null);
+      await interaction.reply({
+        embeds: [embed],
+        ephemeral: true
+      }).catch(() => null);
     }
   }
 });
@@ -1028,19 +1090,25 @@ client.on("messageCreate", async message => {
   if (message.author.bot || !message.guild) return;
 
   if (message.content.startsWith("?")) {
-    const args = message.content.trim().split(/\s+/);
-    const command = args[0].toLowerCase();
-    const member = message.member;
+    const command = message.content.trim().split(/\s+/)[0].toLowerCase();
 
-    if (command === "?ping") {
-      if (!isAdmin(member)) {
+    if (!isAdmin(message.member)) {
+      if (["?ping", "?membercount", "?whosflorian"].includes(command)) {
         return message.reply({
           embeds: [
-            makeEmbed("Permission denied", "Administrator permission required.", COLORS.red)
+            makeEmbed(
+              "Permission denied",
+              "Administrator permission required.",
+              COLORS.red
+            )
           ]
         });
       }
 
+      return;
+    }
+
+    if (command === "?ping") {
       return message.reply({
         embeds: [
           makeEmbed(
@@ -1053,14 +1121,6 @@ client.on("messageCreate", async message => {
     }
 
     if (command === "?membercount") {
-      if (!isAdmin(member)) {
-        return message.reply({
-          embeds: [
-            makeEmbed("Permission denied", "Administrator permission required.", COLORS.red)
-          ]
-        });
-      }
-
       return message.reply({
         embeds: [
           makeEmbed(
@@ -1073,14 +1133,6 @@ client.on("messageCreate", async message => {
     }
 
     if (command === "?whosflorian") {
-      if (!isAdmin(member)) {
-        return message.reply({
-          embeds: [
-            makeEmbed("Permission denied", "Administrator permission required.", COLORS.red)
-          ]
-        });
-      }
-
       return message.reply({
         embeds: [makeEmbed("Answer", "de goat", COLORS.green)]
       });
@@ -1092,9 +1144,7 @@ client.on("messageCreate", async message => {
   const now = Date.now();
   const userId = message.author.id;
 
-  if (!state.raidMessages[userId]) {
-    state.raidMessages[userId] = [];
-  }
+  if (!state.raidMessages[userId]) state.raidMessages[userId] = [];
 
   state.raidMessages[userId] = state.raidMessages[userId].filter(
     timestamp => now - timestamp < 6000
@@ -1125,9 +1175,7 @@ client.on("guildMemberAdd", async member => {
     const now = Date.now();
     const guildId = member.guild.id;
 
-    if (!state.recentJoins[guildId]) {
-      state.recentJoins[guildId] = [];
-    }
+    if (!state.recentJoins[guildId]) state.recentJoins[guildId] = [];
 
     state.recentJoins[guildId] = state.recentJoins[guildId].filter(
       timestamp => now - timestamp < 15000
@@ -1171,28 +1219,35 @@ client.on("guildMemberAdd", async member => {
 
     await logMessage(
       "Rank assigned",
-      member.user.tag + " joined the target server and received **" +
-        role.name + "**.",
+      member.user.tag + " received **" + role.name + "** after joining.",
       COLORS.green
     );
 
-    try {
-      await member.send({
-        embeds: [
-          makeEmbed(
-            "Rank Assigned",
-            "Welcome! Your rank **" + role.name + "** has been assigned.",
-            COLORS.green
-          )
-        ]
-      });
-    } catch {}
+    await member.send({
+      embeds: [
+        makeEmbed(
+          "Rank Assigned",
+          "Welcome! Your rank **" + role.name + "** has been assigned.",
+          COLORS.green
+        )
+      ]
+    }).catch(() => null);
   } catch (error) {
     await logMessage(
       "Rank assignment failed",
-      "Couldn't assign **" + role.name + "** to " + member.user.tag +
-        ". Error: " + error.message,
+      "Couldn't assign **" + role.name + "** to " +
+        member.user.tag + ". Error: " + error.message,
       COLORS.red
+    );
+  }
+
+  if (state.antinuke && member.user.bot) {
+    await logMessage(
+      "Bot added to server",
+      "A bot joined **" + member.guild.name +
+        "**: " + member.user.tag +
+        ". Review the audit log to confirm who added it.",
+      COLORS.yellow
     );
   }
 });
@@ -1202,8 +1257,7 @@ async function findAuditExecutor(guild, type) {
     const logs = await guild.fetchAuditLogs({ type, limit: 1 });
     const entry = logs.entries.first();
 
-    if (!entry) return null;
-    if (Date.now() - entry.createdTimestamp > 15000) return null;
+    if (!entry || Date.now() - entry.createdTimestamp > 15000) return null;
 
     return entry.executor || null;
   } catch {
@@ -1221,7 +1275,7 @@ async function handleDestructiveEvent(guild, eventName, auditType) {
     "**Event:** " + eventName +
       "\n**Server:** " + guild.name +
       "\n**Executor:** " + (executor ? executor.tag : "Unknown") +
-      "\n\nThis action may be destructive. Check the audit log.",
+      "\n\nReview the server audit log.",
     COLORS.red
   );
 
@@ -1249,7 +1303,7 @@ async function handleDestructiveEvent(guild, eventName, auditType) {
   if (!actor || isAdmin(actor)) {
     await logMessage(
       "Anti-nuke escalation skipped",
-      "The actor couldn't be safely actioned automatically. Review the audit log.",
+      "The actor could not be safely actioned automatically. Review the audit log.",
       COLORS.yellow
     );
     return;
@@ -1266,7 +1320,10 @@ async function handleDestructiveEvent(guild, eventName, auditType) {
   if (!dangerousRoles.size) return;
 
   try {
-    await actor.roles.remove(dangerousRoles, "Anti-nuke: repeated destructive actions");
+    await actor.roles.remove(
+      dangerousRoles,
+      "Anti-nuke: repeated destructive actions"
+    );
 
     await logMessage(
       "Anti-nuke response",
@@ -1310,18 +1367,6 @@ client.on("webhookUpdate", channel => {
       AuditLogEvent.WebhookUpdate
     );
   }
-});
-
-client.on("guildMemberAdd", async member => {
-  if (!state.antinuke || !member.user.bot) return;
-
-  await logMessage(
-    "Bot added to server",
-    "A bot joined **" + member.guild.name +
-      "**: " + member.user.tag +
-      ". Review the audit log to confirm who added it.",
-    COLORS.yellow
-  );
 });
 
 client.login(TOKEN);
