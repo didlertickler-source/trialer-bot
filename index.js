@@ -1,4 +1,3 @@
-```js
 require("dotenv").config();
 
 const {
@@ -1137,4 +1136,3 @@ process.on("unhandledRejection", error => {
 });
 
 client.login(TOKEN);
-```
