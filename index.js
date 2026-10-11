@@ -37,8 +37,8 @@ const TARGET_GUILD_ID = process.env.TARGET_GUILD_ID;
 
 const ASKTRIAL_CHANNEL_ID = "1558606277263761468";
 const TRIAL_REQUEST_CHANNEL_ID = "1558792699966914721";
-
 const TRIALER_ROLE_NAME = "𓆩˙⸸˙𓆪︱trialer";
+
 const TARGET_INVITE_URL = process.env.TARGET_INVITE_URL || "";
 const SECURITY_LOG_CHANNEL_ID =
   process.env.SECURITY_LOG_CHANNEL_ID ||
@@ -121,10 +121,7 @@ async function replyEmbed(interaction, title, description, color, ephemeral = tr
     return interaction.editReply({ embeds: [embed] });
   }
 
-  return interaction.reply({
-    embeds: [embed],
-    ephemeral
-  });
+  return interaction.reply({ embeds: [embed], ephemeral });
 }
 
 async function logMessage(title, description, color) {
@@ -132,6 +129,7 @@ async function logMessage(title, description, color) {
 
   try {
     const channel = await client.channels.fetch(SECURITY_LOG_CHANNEL_ID);
+
     if (!channel || !channel.isTextBased()) return;
 
     await channel.send({
@@ -152,14 +150,66 @@ async function getSourceGuild() {
     await client.guilds.fetch(SOURCE_GUILD_ID).catch(() => null);
 }
 
-function findRole(guild, name) {
-  if (!guild || !name) return null;
+/*
+  Fix: normalize role names by removing symbols, punctuation and spaces.
+  Exact normalized matches are preferred, then partial matches.
+  Example: "starting" matches "𓆩˙starting˙𓆪".
+*/
+function normalizeRoleName(value) {
+  return String(value || "")
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]/g, "");
+}
 
-  const wanted = name.trim().toLowerCase();
+function findRole(guild, requestedName) {
+  if (!guild || !requestedName) return null;
 
-  return guild.roles.cache.find(
-    role => role.name.toLowerCase() === wanted
-  ) || null;
+  const requested = normalizeRoleName(requestedName);
+
+  if (!requested) return null;
+
+  const roles = Array.from(guild.roles.cache.values())
+    .filter(role => role.id !== guild.id && !role.managed);
+
+  const exact = roles.find(
+    role => normalizeRoleName(role.name) === requested
+  );
+
+  if (exact) return exact;
+
+  const matches = roles.filter(role =>
+    normalizeRoleName(role.name).includes(requested)
+  );
+
+  if (matches.length === 1) return matches[0];
+
+  if (matches.length > 1) {
+    matches.sort((a, b) => {
+      const aName = normalizeRoleName(a.name);
+      const bName = normalizeRoleName(b.name);
+
+      if (aName.startsWith(requested) && !bName.startsWith(requested)) return -1;
+      if (bName.startsWith(requested) && !aName.startsWith(requested)) return 1;
+
+      return aName.length - bName.length;
+    });
+
+    if (
+      matches.length > 1 &&
+      normalizeRoleName(matches[0].name).startsWith(requested) &&
+      normalizeRoleName(matches[1].name).startsWith(requested) &&
+      normalizeRoleName(matches[0].name).length ===
+        normalizeRoleName(matches[1].name).length
+    ) {
+      return null;
+    }
+
+    return matches[0];
+  }
+
+  return null;
 }
 
 function isAdmin(member) {
@@ -185,7 +235,7 @@ function isStaff(member) {
 function isKnownRankRole(role) {
   if (!role || role.name === "@everyone") return false;
 
-  const name = role.name.toLowerCase().trim();
+  const name = normalizeRoleName(role.name);
 
   const knownNames = [
     "starting",
@@ -201,9 +251,8 @@ function isKnownRankRole(role) {
     "rank"
   ];
 
-  return knownNames.some(term =>
-    name === term || name.includes(term)
-  ) || state.rankRoleIds.includes(role.id);
+  return knownNames.some(term => name.includes(term)) ||
+    state.rankRoleIds.includes(role.id);
 }
 
 async function getRankStatus(userId) {
@@ -212,6 +261,8 @@ async function getRankStatus(userId) {
   if (!guild) {
     return { error: "The target server is unavailable." };
   }
+
+  await guild.roles.fetch().catch(() => null);
 
   const member = await guild.members.fetch(userId).catch(() => null);
 
@@ -230,9 +281,7 @@ async function getRankStatus(userId) {
 
 function getOpenTrial(userId) {
   return Object.values(state.trials).find(
-    trial =>
-      trial.requesterId === userId &&
-      trial.status === "open"
+    trial => trial.requesterId === userId && trial.status === "open"
   );
 }
 
@@ -313,7 +362,7 @@ const commands = [
     )
     .addStringOption(option =>
       option.setName("rank")
-        .setDescription("Type the exact target-server role name")
+        .setDescription("Role name or part of the role name")
         .setRequired(true)
     ),
 
@@ -336,7 +385,7 @@ const commands = [
     )
     .addStringOption(option =>
       option.setName("rank")
-        .setDescription("Exact target-server role name")
+        .setDescription("Role name or part of the role name")
         .setRequired(true)
     ),
 
@@ -420,11 +469,8 @@ client.on("interactionCreate", async interaction => {
 
         const enabled = interaction.options.getString("state") === "on";
 
-        if (name === "antiraid") {
-          state.antiraid = enabled;
-        } else {
-          state.antinuke = enabled;
-        }
+        if (name === "antiraid") state.antiraid = enabled;
+        else state.antinuke = enabled;
 
         saveState();
 
@@ -507,7 +553,7 @@ client.on("interactionCreate", async interaction => {
           return replyEmbed(
             interaction,
             "Trial role missing",
-            "I couldn't find the role **" + TRIALER_ROLE_NAME + "**.",
+            "I couldn't find the trialer role. Check its exact name in the source server.",
             COLORS.red
           );
         }
@@ -538,15 +584,12 @@ client.on("interactionCreate", async interaction => {
           interaction.options.getString("robloxuser"),
           "Not provided"
         );
-
         const position = safeText(
           interaction.options.getString("position"),
           "Not provided"
         );
-
         const activity = interaction.options.getInteger("activity");
         const ability = interaction.options.getString("areyougood");
-
         const trialId = interaction.user.id + "-" + Date.now();
 
         const embed = makeEmbed(
@@ -554,36 +597,12 @@ client.on("interactionCreate", async interaction => {
           "A member has submitted a trial request.",
           COLORS.blue
         ).addFields(
-          {
-            name: "Discord User",
-            value: interaction.user.toString(),
-            inline: true
-          },
-          {
-            name: "Roblox Username",
-            value: robloxUser,
-            inline: true
-          },
-          {
-            name: "Position",
-            value: position,
-            inline: true
-          },
-          {
-            name: "Activity",
-            value: activity + "/10",
-            inline: true
-          },
-          {
-            name: "Ability",
-            value: ability,
-            inline: true
-          },
-          {
-            name: "Status",
-            value: "Waiting to be claimed",
-            inline: false
-          }
+          { name: "Discord User", value: interaction.user.toString(), inline: true },
+          { name: "Roblox Username", value: robloxUser, inline: true },
+          { name: "Position", value: position, inline: true },
+          { name: "Activity", value: activity + "/10", inline: true },
+          { name: "Ability", value: ability, inline: true },
+          { name: "Status", value: "Waiting to be claimed", inline: false }
         );
 
         const row = new ActionRowBuilder().addComponents(
@@ -632,7 +651,7 @@ client.on("interactionCreate", async interaction => {
         await interaction.deferReply({ ephemeral: true });
 
         const user = interaction.options.getUser("user");
-        const rankName = interaction.options.getString("rank").trim();
+        const requestedRank = interaction.options.getString("rank").trim();
         const targetGuild = await getTargetGuild();
 
         if (!targetGuild) {
@@ -644,14 +663,28 @@ client.on("interactionCreate", async interaction => {
           );
         }
 
-        const role = findRole(targetGuild, rankName);
+        await targetGuild.roles.fetch().catch(() => null);
 
-        if (!role || role.id === targetGuild.id || role.managed) {
+        const role = findRole(targetGuild, requestedRank);
+
+        if (!role) {
+          const normalized = normalizeRoleName(requestedRank);
+          const suggestions = targetGuild.roles.cache
+            .filter(item =>
+              item.id !== targetGuild.id &&
+              !item.managed &&
+              normalizeRoleName(item.name).includes(normalized)
+            )
+            .first(5)
+            .map(item => "`" + item.name + "`");
+
           return replyEmbed(
             interaction,
             "Rank not found",
-            "I couldn't find an assignable role named **" +
-              rankName + "** in the target server.",
+            "I couldn't find a role matching **" + requestedRank + "**." +
+              (suggestions.length
+                ? "\n\nPossible matches:\n" + suggestions.join("\n")
+                : "\n\nCheck that the role exists in the target server and that the bot is in that server."),
             COLORS.red
           );
         }
@@ -663,7 +696,7 @@ client.on("interactionCreate", async interaction => {
           return replyEmbed(
             interaction,
             "Role hierarchy error",
-            "Move the bot's role above **" + role.name + "**.",
+            "Move the bot's role above **" + role.name + "** in the target server.",
             COLORS.red
           );
         }
@@ -714,9 +747,7 @@ client.on("interactionCreate", async interaction => {
           if (
             sourceMember &&
             sourceGuild.members.me &&
-            sourceGuild.members.me.permissions.has(
-              PermissionFlagsBits.KickMembers
-            ) &&
+            sourceGuild.members.me.permissions.has(PermissionFlagsBits.KickMembers) &&
             sourceMember.kickable
           ) {
             await sourceMember.kick("Trial processed; rank: " + role.name)
@@ -785,7 +816,7 @@ client.on("interactionCreate", async interaction => {
         await interaction.deferReply({ ephemeral: true });
 
         const user = interaction.options.getUser("user");
-        const rankName = interaction.options.getString("rank").trim();
+        const requestedRank = interaction.options.getString("rank").trim();
         const targetGuild = await getTargetGuild();
 
         if (!targetGuild) {
@@ -796,6 +827,8 @@ client.on("interactionCreate", async interaction => {
             COLORS.red
           );
         }
+
+        await targetGuild.roles.fetch().catch(() => null);
 
         const targetMember = await targetGuild.members
           .fetch(user.id)
@@ -810,14 +843,13 @@ client.on("interactionCreate", async interaction => {
           );
         }
 
-        const role = findRole(targetGuild, rankName);
+        const role = findRole(targetGuild, requestedRank);
 
-        if (!role || role.id === targetGuild.id || role.managed) {
+        if (!role) {
           return replyEmbed(
             interaction,
             "Rank not found",
-            "I couldn't find an assignable role named **" +
-              rankName + "**.",
+            "I couldn't find a role matching **" + requestedRank + "** in the target server.",
             COLORS.red
           );
         }
@@ -843,10 +875,7 @@ client.on("interactionCreate", async interaction => {
         );
 
         try {
-          if (oldRoles.size) {
-            await targetMember.roles.remove(oldRoles);
-          }
-
+          if (oldRoles.size) await targetMember.roles.remove(oldRoles);
           await targetMember.roles.add(role);
 
           if (!state.rankRoleIds.includes(role.id)) {
@@ -889,8 +918,7 @@ client.on("interactionCreate", async interaction => {
           "Server Information",
           "**Name:** " + guild.name +
             "\n**Members:** " + guild.memberCount +
-            "\n**Created:** <t:" +
-              Math.floor(guild.createdTimestamp / 1000) + ":D>" +
+            "\n**Created:** <t:" + Math.floor(guild.createdTimestamp / 1000) + ":D>" +
             "\n**Owner:** <@" + guild.ownerId + ">",
           COLORS.blue
         );
@@ -910,22 +938,21 @@ client.on("interactionCreate", async interaction => {
               .join(", ") || "No roles"
           : "Not in this server";
 
-        const embed = makeEmbed(
-          "User Information",
-          "**User:** " + user.tag +
-            "\n**ID:** " + user.id +
-            "\n**Created:** <t:" +
-              Math.floor(user.createdTimestamp / 1000) + ":F>" +
-            "\n**Joined:** " +
-              (targetMember
-                ? "<t:" + Math.floor(targetMember.joinedTimestamp / 1000) + ":F>"
-                : "Not in this server") +
-            "\n**Roles:** " + roles,
-          COLORS.blue
-        ).setThumbnail(user.displayAvatarURL({ size: 256 }));
-
         return interaction.reply({
-          embeds: [embed],
+          embeds: [
+            makeEmbed(
+              "User Information",
+              "**User:** " + user.tag +
+                "\n**ID:** " + user.id +
+                "\n**Created:** <t:" + Math.floor(user.createdTimestamp / 1000) + ":F>" +
+                "\n**Joined:** " +
+                (targetMember
+                  ? "<t:" + Math.floor(targetMember.joinedTimestamp / 1000) + ":F>"
+                  : "Not in this server") +
+                "\n**Roles:** " + roles,
+              COLORS.blue
+            ).setThumbnail(user.displayAvatarURL({ size: 256 }))
+          ],
           ephemeral: true
         });
       }
@@ -981,8 +1008,7 @@ client.on("interactionCreate", async interaction => {
         });
       }
 
-      if (!isAdmin(interaction.member) &&
-          !hasTrialerRole(interaction.member)) {
+      if (!isAdmin(interaction.member) && !hasTrialerRole(interaction.member)) {
         return interaction.reply({
           embeds: [
             makeEmbed(
@@ -1028,21 +1054,9 @@ client.on("interactionCreate", async interaction => {
         "This request has been claimed.",
         COLORS.green
       ).addFields(
-        {
-          name: "Requester",
-          value: "<@" + trial.requesterId + ">",
-          inline: true
-        },
-        {
-          name: "Claimed By",
-          value: interaction.user.toString(),
-          inline: true
-        },
-        {
-          name: "Status",
-          value: "Claimed",
-          inline: true
-        }
+        { name: "Requester", value: "<@" + trial.requesterId + ">", inline: true },
+        { name: "Claimed By", value: interaction.user.toString(), inline: true },
+        { name: "Status", value: "Claimed", inline: true }
       );
 
       await interaction.message.edit({
@@ -1061,8 +1075,8 @@ client.on("interactionCreate", async interaction => {
 
       await logMessage(
         "Trial claimed",
-        "Requester: <@" + trial.requesterId + ">\nClaimed by: " +
-          interaction.user.tag,
+        "Requester: <@" + trial.requesterId +
+          ">\nClaimed by: " + interaction.user.tag,
         COLORS.green
       );
     }
@@ -1092,20 +1106,17 @@ client.on("messageCreate", async message => {
   if (message.content.startsWith("?")) {
     const command = message.content.trim().split(/\s+/)[0].toLowerCase();
 
-    if (!isAdmin(message.member)) {
-      if (["?ping", "?membercount", "?whosflorian"].includes(command)) {
-        return message.reply({
-          embeds: [
-            makeEmbed(
-              "Permission denied",
-              "Administrator permission required.",
-              COLORS.red
-            )
-          ]
-        });
-      }
-
-      return;
+    if (["?ping", "?membercount", "?whosflorian"].includes(command) &&
+        !isAdmin(message.member)) {
+      return message.reply({
+        embeds: [
+          makeEmbed(
+            "Permission denied",
+            "Administrator permission required.",
+            COLORS.red
+          )
+        ]
+      });
     }
 
     if (command === "?ping") {
@@ -1195,10 +1206,22 @@ client.on("guildMemberAdd", async member => {
     }
   }
 
+  if (state.antinuke && member.user.bot) {
+    await logMessage(
+      "Bot added to server",
+      "A bot joined **" + member.guild.name +
+        "**: " + member.user.tag +
+        ". Review the audit log to confirm who added it.",
+      COLORS.yellow
+    );
+  }
+
   if (member.guild.id !== TARGET_GUILD_ID) return;
 
   const pending = state.pending[member.id];
   if (!pending) return;
+
+  await member.guild.roles.fetch().catch(() => null);
 
   const role = member.guild.roles.cache.get(pending.roleId);
 
@@ -1238,16 +1261,6 @@ client.on("guildMemberAdd", async member => {
       "Couldn't assign **" + role.name + "** to " +
         member.user.tag + ". Error: " + error.message,
       COLORS.red
-    );
-  }
-
-  if (state.antinuke && member.user.bot) {
-    await logMessage(
-      "Bot added to server",
-      "A bot joined **" + member.guild.name +
-        "**: " + member.user.tag +
-        ". Review the audit log to confirm who added it.",
-      COLORS.yellow
     );
   }
 });
